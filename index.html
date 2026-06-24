@@ -1363,9 +1363,34 @@ function filteredEntries(){
     return true;
   });
 }
+function autoFixTooltip(entries){
+  const types=[];
+  const seen=new Set();
+  const addType=t=>{ if(t&&!seen.has(t)){ seen.add(t); types.push(t); } };
+  for(const e of entries){
+    if(e._resolved) continue;
+    for(const is of e.issues||[]){
+      if(!(is.actions||[]).some(a=>a.auto)) continue;
+      const msg=is.msg||"";
+      if(/Missing journal; DOI\/URL looks like arXiv/i.test(msg)) addType("missing arXiv journal fields");
+      else if(/Use booktitle instead of eventtitle/i.test(msg)) addType("proceedings eventtitle aliases");
+      else if(/Unexpected field/i.test(msg)) addType("known field-name typos");
+      else if(/Year is not a 4-digit number/i.test(msg)) addType("year formatting");
+      else if(/Page range uses single dash/i.test(msg)) addType("page-range dashes");
+      else if(/DOI should be bare/i.test(msg)) addType("DOI URL/prefix cleanup");
+      else if(/Month must be an integer/i.test(msg)) addType("month names/abbreviations");
+      else if(/title is not brace-protected/i.test(msg)) addType("protected title words");
+      else addType(msg.replace(/\s+/g," ").trim());
+    }
+  }
+  return types.length
+    ? `Auto-fix will fix: ${types.join(", ")}.`
+    : "No safe auto-fixes are currently available.";
+}
 function renderEntries(){
   const box=$("#entries"); box.innerHTML="";
   const list=filteredEntries();
+  $("#btnAutofix").title=autoFixTooltip(ENTRIES);
   if(!list.length){ box.innerHTML=`<p class="muted" style="padding:16px">No entries match.</p>`; return; }
   for(const e of list){ box.appendChild(entryEl(e)); if(e._verify) paintVerify(e); }
 }
@@ -1399,6 +1424,7 @@ function entryEl(e){
   }).join("");
   const hiddenIssueCount=e._resolved ? e.issues.length : 0;
   const hasAuto=visibleIssues.some(x=>(x.actions||[]).some(a=>a.auto));
+  const autoTitle=autoFixTooltip([e]);
   const verifySlot=`<div class="verify" data-key="${escapeHtml(e.key)}"></div>`;
   d.innerHTML=
     `<summary><span class="etype">${e.type}</span>`+
@@ -1414,7 +1440,7 @@ function entryEl(e){
         ((e.issues.length||e._resolved)?`<button class="ed-resolve">${e._resolved?"Show issues":"Resolved"}</button>`:"")+
         `<button class="ed-edit">✎ Edit</button>`+
         `<button class="ed-verify">⌕ Verify</button>`+
-        (hasAuto?`<button class="ed-autofix primary">⚡ Auto-fix this entry</button>`:"")+
+        (hasAuto?`<button class="ed-autofix primary" title="${escapeHtml(autoTitle)}">⚡ Auto-fix this entry</button>`:"")+
         `<span class="spacer"></span>`+
         `<button class="ed-del danger">Delete</button>`+
       `</div>`+
@@ -1514,6 +1540,29 @@ function deleteEntry(e){
   toast("Entry deleted");
 }
 function escapeHtml(s){return (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+function doiAnchor(url,doi){
+  return `<a class="doi-link" href="${escapeHtml(url)}" title="Open DOI in popup window">${escapeHtml(doi)}</a>`;
+}
+function openDoiPopup(url){
+  const w=900, h=720;
+  const left=Math.max(0, Math.round((window.screenX||0)+(window.outerWidth-w)/2));
+  const top=Math.max(0, Math.round((window.screenY||0)+(window.outerHeight-h)/2));
+  const features=`popup=yes,width=${w},height=${h},left=${left},top=${top},resizable=yes,scrollbars=yes`;
+  const popup=window.open("", "tidybiberDoiPopup", features);
+  if(popup){
+    popup.opener=null;
+    popup.location.href=url;
+    popup.focus();
+  }else{
+    window.open(url,"_blank","noopener");
+  }
+}
+document.addEventListener("click",e=>{
+  const a=e.target.closest&&e.target.closest("a.doi-link");
+  if(!a) return;
+  e.preventDefault();
+  openDoiPopup(a.href);
+});
 function diffCodeHtml(original,formatted){
   const a=String(original||"").split("\n");
   const b=String(formatted||"").split("\n");
@@ -1615,9 +1664,10 @@ function paintVerify(e){
   const v=e._verify;
   const cls=v.status==="found"?(v.notes.some(n=>/mismatch|differs|fabrication|Missing|Year:|author:|Author list|Journal\/venue:|Pages:|unreachable|timed out/i.test(n))?"w":"ok"):"e";
   const preview=v.doiPreview;
-  const link=preview?` <a href="${escapeHtml(preview.url)}" target="_blank" rel="noopener">${escapeHtml(preview.doi)}</a>`:
-    v.matchedUrl?` <a href="${escapeHtml(v.matchedUrl)}" target="_blank" rel="noopener">${escapeHtml(v.matchedDoi||"link")}</a>`:
-    v.matchedDoi?` <a href="https://doi.org/${escapeHtml(v.matchedDoi)}" target="_blank" rel="noopener">${escapeHtml(v.matchedDoi)}</a>`:"";
+  const link=preview?` ${doiAnchor(preview.url,preview.doi)}`:
+    (v.matchedUrl&&v.matchedDoi)?` ${doiAnchor(v.matchedUrl,v.matchedDoi)}`:
+    v.matchedUrl?` <a href="${escapeHtml(v.matchedUrl)}" target="_blank" rel="noopener">link</a>`:
+    v.matchedDoi?` ${doiAnchor(`https://doi.org/${v.matchedDoi}`,v.matchedDoi)}`:"";
   let rows=`<div class="issue ${cls}"><span class="ic">⌕</span>`+
     `<span><b>${escapeHtml(v.source||v.status)}</b>: ${v.notes.map(escapeHtml).join("; ")}${link}</span></div>`;
   if(preview) rows+=doiPreviewHtml(preview);
@@ -1632,7 +1682,7 @@ function paintVerify(e){
   if(v.published){
     const p=v.published;
     rows+=`<div class="issue ok"><span class="ic">★</span><span><b>Published version</b>: `+
-      `<a href="https://doi.org/${escapeHtml(p.doi)}" target="_blank" rel="noopener">${escapeHtml(p.doi)}</a>`+
+      doiAnchor(`https://doi.org/${p.doi}`,p.doi)+
       `${p.year?` (${escapeHtml(p.year)})`:""} — ${escapeHtml((p.title||"").slice(0,90))}</span></div>`;
   }
   // one-click fixes that apply a database value to the entry
@@ -1658,7 +1708,7 @@ function doiPreviewHtml(p){
     ["Note",p.note]
   ].filter(([,v])=>v);
   return `<div class="doi-preview"><div class="head"><b>DOI preview</b>`+
-    `<a href="${escapeHtml(p.url)}" target="_blank" rel="noopener">${escapeHtml(p.doi)}</a></div>`+
+    doiAnchor(p.url,p.doi)+`</div>`+
     `<div class="grid">${meta.map(([k,v])=>`<div class="k">${escapeHtml(k)}</div><div class="v">${escapeHtml(v)}</div>`).join("")}</div></div>`;
 }
 function cssEsc(s){return (window.CSS&&CSS.escape)?CSS.escape(s):s.replace(/["\\]/g,"\\$&");}
