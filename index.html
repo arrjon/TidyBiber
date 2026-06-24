@@ -288,7 +288,7 @@ const DEFAULT_CONFIG = {
     detectDuplicateKeys: true,
     detectDuplicateDOIs: true,
     warnUnknownFields: true,
-    monthAbbrev: true             // month should be jan,feb,…
+    monthAbbrev: true             // month should be an integer 1..12
   },
   verification: {
     // Enabled sources, tried in this order. All are CORS-enabled and free.
@@ -307,15 +307,15 @@ const DEFAULT_CONFIG = {
 const STOPWORDS = new Set(("a an and are as at be by de do does die for from has he in is it its of on or "+
   "that the to was were will with we our this these those an via using toward towards "+
   "into over under about between among").split(" "));
-const MONTHS = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
 // Common misspelled field names → their correct name (for one-click autocorrect).
 const FIELD_TYPOS = { dio:"doi", doy:"doi", tolume:"volume", vol:"volume", months:"month",
   jounal:"journal", jornal:"journal", titel:"title", autor:"author", auther:"author",
   adress:"address", yr:"year", pp:"pages", page:"pages", keyword:"keywords", url1:"url",
   editors:"editor", publishers:"publisher", abstrac:"abstract" };
-const MONTHMAP = { january:"jan", february:"feb", march:"mar", april:"apr", may:"may",
-  june:"jun", july:"jul", august:"aug", september:"sep", sept:"sep", october:"oct",
-  november:"nov", december:"dec" };
+const MONTHMAP = { jan:"1", january:"1", feb:"2", february:"2", mar:"3", march:"3",
+  apr:"4", april:"4", may:"5", jun:"6", june:"6", jul:"7", july:"7",
+  aug:"8", august:"8", sep:"9", sept:"9", september:"9", oct:"10", october:"10",
+  nov:"11", november:"11", dec:"12", december:"12" };
 
 let CONFIG = structuredClone(DEFAULT_CONFIG);  // session-only; persist via Export/Import JSON
 let ENTRIES = [];        // parsed entries with diagnostics
@@ -495,10 +495,11 @@ function lintAll(entries){
     // month
     if(ch.monthAbbrev && e.fields.month){
       const raw=e.fields.month.replace(/[{}"]/g,"").trim().toLowerCase();
-      if(!MONTHS.includes(raw.slice(0,3)) && !/^\d{1,2}$/.test(raw)){
-        const ab=MONTHMAP[raw];
-        add("warn",`Month not a standard abbreviation: "${e.fields.month}"`, ab||"",
-          ab?[{label:`Fix → ${ab}`,kind:"setField",field:"month",value:ab,auto:true}]:[]);
+      const n=/^\d+$/.test(raw) ? parseInt(raw,10) : NaN;
+      const fixed=MONTHMAP[raw]||"";
+      if(!(n>=1 && n<=12)){
+        add("warn",`Month must be an integer from 1 to 12: "${e.fields.month}"`, fixed,
+          fixed?[{label:`Fix → ${fixed}`,kind:"setField",field:"month",value:fixed,auto:true}]:[]);
       }
     }
     // protected words not braced in title
@@ -1475,7 +1476,7 @@ function buildConfigUI(){
     ${chk("fourDigitYear","Year must be 4 digits")}
     ${chk("requirePageRangeDash","Page ranges use -- (en-dash)")}
     ${chk("doiFormat","DOI must be bare (not a URL)")}
-    ${chk("monthAbbrev","Month is a standard abbreviation")}
+    ${chk("monthAbbrev","Month must be an integer from 1 to 12")}
     ${chk("detectDuplicateKeys","Detect duplicate keys")}
     ${chk("detectDuplicateDOIs","Detect duplicate DOIs")}
     ${chk("warnUnknownFields","Warn on unexpected fields")}
