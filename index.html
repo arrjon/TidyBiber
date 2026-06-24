@@ -95,6 +95,13 @@
   .issue.w{background:var(--warn-bg);color:var(--warn)}
   .issue .ic{font-family:var(--mono);font-weight:700;flex-shrink:0}
   .issue .fix{margin-left:auto;font-family:var(--mono);font-size:11.5px;opacity:.8;flex-shrink:0}
+  .doi-preview{border:1px solid var(--line);background:#fff;border-radius:8px;padding:10px 12px;font-size:13px}
+  .doi-preview .head{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+  .doi-preview .head b{font-size:13px}
+  .doi-preview .head a{font-family:var(--mono);font-size:12.5px}
+  .doi-preview .grid{display:grid;grid-template-columns:auto 1fr;gap:4px 10px}
+  .doi-preview .k{font-family:var(--mono);color:var(--mute);font-size:11.5px;text-transform:uppercase;letter-spacing:.04em}
+  .doi-preview .v{min-width:0;overflow-wrap:anywhere}
   .fixwrap{margin-left:auto;display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end}
   .fixbtn{font-size:11.5px;padding:3px 9px;border-radius:6px;background:#fff;line-height:1.3}
   .fixbtn.auto{border-color:var(--accent);color:var(--accent)}
@@ -135,6 +142,10 @@
   textarea:focus,input:focus,select:focus{outline:none;border-color:var(--accent)}
   .row{display:flex;gap:10px;align-items:center;margin-bottom:7px}
   .row label{font-size:13px}
+  .source-row{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:start;margin-bottom:7px}
+  .source-row label{font-size:13px}
+  .source-move{display:flex;gap:4px}
+  .source-move button{width:28px;height:28px;padding:0;font-size:14px;line-height:1}
   .seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;width:fit-content}
   .seg button{border:none;border-radius:0;border-right:1px solid var(--line)}
   .seg button:last-child{border-right:none}
@@ -293,12 +304,12 @@ const DEFAULT_CONFIG = {
     monthAbbrev: true             // month should be an integer 1..12
   },
   verification: {
-    // Enabled sources, tried in this order. All are CORS-enabled and free.
-    //   crossref | openalex | semanticscholar | datacite | dblp
-    sources: ["crossref","openalex","semanticscholar","datacite"],
+    // Sources are tried in this order. Disable or reorder them in Config.
+    //   crossref | pubmed | openalex | semanticscholar | datacite | dblp
+    sourceOrder: ["crossref","pubmed","openalex","semanticscholar","datacite","dblp"],
+    sources: ["crossref","pubmed","openalex","semanticscholar","datacite"],
     mailto: "",                   // optional: your email for Crossref/OpenAlex "polite pool" (faster, nicer). Blank = anonymous access.
     titleSimThreshold: 0.5,       // below this Jaccard similarity → flag possible mismatch
-    crossCheck: false,             // when on, query every enabled source and compare findings
     delayMs: 120,                 // pause between entries to stay polite to the APIs
     checkUrls: true,              // ping the url field to detect dead links
     urlTimeoutMs: 8000,           // give up on a url after this long
@@ -331,6 +342,9 @@ let CUR_SEARCH = "";
 // merge a saved/imported object onto defaults, applying the schema migration
 function migrateConfig(saved){
   const cfg = mergeDeep(structuredClone(DEFAULT_CONFIG), saved||{});
+  cfg.verification.sourceOrder = normalizeSourceOrder(cfg.verification.sourceOrder, cfg.verification.sources);
+  cfg.verification.sources = (cfg.verification.sources||[])
+    .filter((s,i,a)=>SOURCES[s] && a.indexOf(s)===i);
   if((saved&&saved.schemaVersion||0) < DEFAULT_CONFIG.schemaVersion){
     cfg.requiredFields = structuredClone(DEFAULT_CONFIG.requiredFields);
     cfg.optionalFields = structuredClone(DEFAULT_CONFIG.optionalFields);
@@ -780,11 +794,25 @@ function exportBib(){
 
 const SOURCES = {
   crossref:        { label:"Crossref",        byDoi:crossrefByDoi,    byTitle:crossrefByTitle },
+  pubmed:          { label:"PubMed",          byDoi:pubmedByDoi,      byTitle:pubmedByTitle },
   openalex:        { label:"OpenAlex",        byDoi:openalexByDoi,    byTitle:openalexByTitle },
   semanticscholar: { label:"Semantic Scholar",byDoi:s2ByDoi,         byTitle:s2ByTitle },
   datacite:        { label:"DataCite",        byDoi:dataciteByDoi,    byTitle:null },
   dblp:            { label:"DBLP",            byDoi:null,             byTitle:dblpByTitle }
 };
+const SOURCE_DESCRIPTIONS = {
+  crossref: "journals, books, conferences — the broadest source",
+  pubmed: "biomedical and life-science literature",
+  openalex: "open scholarly index, very broad coverage",
+  semanticscholar: "strong CS / AI / biomed coverage",
+  datacite: "datasets, software & preprints with DOIs (DOI only)",
+  dblp: "computer-science bibliography (title only)"
+};
+function normalizeSourceOrder(order,enabled){
+  const defaults=DEFAULT_CONFIG.verification.sourceOrder||Object.keys(SOURCES);
+  const merged=[...(order||[]),...(enabled||[]),...defaults];
+  return merged.filter((s,i,a)=>SOURCES[s] && a.indexOf(s)===i);
+}
 
 function mailtoParam(sep){
   const m=(CONFIG.verification.mailto||"").trim();
@@ -808,6 +836,32 @@ function normCrossref(m){
     doi:m.DOI||"", firstAuthor:(m.author&&m.author[0]&&(m.author[0].family||""))||"",
     journal:(m["container-title"]&&m["container-title"][0])||"", pages:m.page||"",
     source:"Crossref", url:m.URL||(m.DOI?`https://doi.org/${m.DOI}`:"") };
+}
+
+/* --- PubMed --- */
+async function pubmedSearch(term){
+  const j=await getJSON(`https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&retmode=json&retmax=1&term=${encodeURIComponent(term)}`);
+  return j&&j.esearchresult&&j.esearchresult.idlist&&j.esearchresult.idlist[0]||null;
+}
+async function pubmedSummary(id){
+  if(!id) return null;
+  const j=await getJSON(`https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&retmode=json&id=${encodeURIComponent(id)}`);
+  const r=j&&j.result&&j.result[id];
+  return r&&r.uid?normPubMed(r):null;
+}
+async function pubmedByDoi(doi){
+  return pubmedSummary(await pubmedSearch(`${doi}[doi]`));
+}
+async function pubmedByTitle(title){
+  return pubmedSummary(await pubmedSearch(`${title}[Title]`));
+}
+function normPubMed(p){
+  const articleIds=p.articleids||[];
+  const doi=((articleIds.find(x=>String(x.idtype||"").toLowerCase()==="doi")||{}).value)||"";
+  const fa=p.authors&&p.authors[0]&&p.authors[0].name||"";
+  return { title:(p.title||"").replace(/\.$/,""), year:p.pubdate?String(p.pubdate).match(/\d{4}/)?.[0]||"":"",
+    doi, firstAuthor:fa.split(/\s+/)[0]||"", journal:p.fulljournalname||p.source||"",
+    pages:p.pages||"", source:"PubMed", url:p.uid?`https://pubmed.ncbi.nlm.nih.gov/${p.uid}/`:(doi?`https://doi.org/${doi}`:"") };
 }
 
 /* --- OpenAlex --- */
@@ -938,10 +992,9 @@ async function findPublishedVersion(e,title){
   let cands=[];
   try{ cands=cands.concat(await crossrefCandidates(title)); }catch(err){}
   try{ cands=cands.concat(await openalexCandidates(title)); }catch(err){}
-  const tset=tok(title);
   const hits=cands.filter(isPublishedCandidate)
-    .map(c=>({...c, sim:jaccard(tset,tok(c.title||""))}))
-    .filter(c=>c.sim>=Math.max(0.6,CONFIG.verification.titleSimThreshold))
+    .map(c=>({...c, sim:titleSimilarity(title,c.title||"").score}))
+    .filter(c=>titleSimilarity(title,c.title||"").passes(Math.max(0.6,CONFIG.verification.titleSimThreshold)))
     .sort((a,b)=>b.sim-a.sim);
   return hits[0]||null;
 }
@@ -963,7 +1016,7 @@ function recordConfirms(e,r,doi,title){
   const efAuthor=normAuthorLast(entryFirstAuthorLast(e));
   if(efYear && r.year && r.year!==efYear) return false;
   if(efAuthor && r.firstAuthor && !authorLastMatches(efAuthor,normAuthorLast(r.firstAuthor))) return false;
-  if(title && r.title && jaccard(tok(title),tok(r.title))<V.titleSimThreshold) return false;
+  if(title && r.title && !titleSimilarity(title,r.title).passes(V.titleSimThreshold)) return false;
   if(doi && r.doi && normDoi(r.doi)!==doi) return false;
   const efJournal=(e.fields.journal||e.fields.journaltitle||e.fields.booktitle||"").replace(/[{}]/g,"").trim();
   if(efJournal && r.journal && !journalMatch(efJournal,r.journal)) return false;
@@ -971,7 +1024,7 @@ function recordConfirms(e,r,doi,title){
 }
 function lowTitleSimilarity(r,title){
   if(!title || !r.title) return false;
-  return jaccard(tok(title),tok(r.title)) < CONFIG.verification.titleSimThreshold;
+  return !titleSimilarity(title,r.title).passes(CONFIG.verification.titleSimThreshold);
 }
 function normAuthorLast(s){ return keyNamePart(translitKey(String(s||""))).toLowerCase(); }
 function authorLastMatches(a,b){
@@ -987,11 +1040,31 @@ function titleAuthorMismatch(e,r){
   const dbAuthor=normAuthorLast(r.firstAuthor);
   return !!(efAuthor && dbAuthor && !authorLastMatches(efAuthor,dbAuthor));
 }
+function doiSuggestionConfidence(e,r,title){
+  if(!r || !r.doi) return {ok:false, reason:""};
+  if(r._lookup==="doi") return {ok:true, reason:""};
+  const sim=title&&r.title?titleSimilarity(title,r.title):{score:0, passes:()=>false};
+  if(!sim.passes(0.75)) return {ok:false, reason:`title-only match is weak (${(sim.score*100|0)}%)`};
+
+  const efYear=(e.fields.year||e.fields.date||"").replace(/\D/g,"").slice(0,4);
+  const yearOk=!!(efYear && r.year && r.year===efYear);
+  const efAuthor=normAuthorLast(entryFirstAuthorLast(e));
+  const authorOk=!!(efAuthor && r.firstAuthor && authorLastMatches(efAuthor,normAuthorLast(r.firstAuthor)));
+  const efJournal=(e.fields.journal||e.fields.journaltitle||e.fields.booktitle||"").replace(/[{}]/g,"").trim();
+  const journalOk=!!(efJournal && r.journal && journalMatch(efJournal,r.journal));
+  const efPages=(e.fields.pages||"").replace(/[{}]/g,"").trim();
+  const pageConflict=!!(efPages && r.pages && pagesDiffer(efPages,r.pages));
+
+  if(pageConflict) return {ok:false, reason:"title-only match has different pages"};
+  if(yearOk || authorOk || journalOk) return {ok:true, reason:""};
+  return {ok:false, reason:"title-only match lacks year, author, or journal confirmation"};
+}
 
 async function verifyEntry(e){
   const out={status:"unchecked",notes:[],matches:[],fixes:[]};
   const V=CONFIG.verification;
-  const enabled=(V.sources||[]).filter(s=>SOURCES[s]);
+  const order=normalizeSourceOrder(V.sourceOrder,V.sources);
+  const enabled=order.filter(s=>(V.sources||[]).includes(s));
   if(!enabled.length){ out.status="error"; out.notes.push("No verification sources enabled (see Config)."); return out; }
   const doi=e.fields.doi?normDoi(e.fields.doi):null;
   const title=e.fields.title?e.fields.title.replace(/[{}]/g,"").trim():"";
@@ -1011,7 +1084,8 @@ async function verifyEntry(e){
     }
     if(!rec) continue;
     if(lowTitleSimilarity(rec,title)){
-      lowTitleRejects.push(`${rec.source} (${(jaccard(tok(title),tok(rec.title))*100|0)}%)`);
+      const sim=titleSimilarity(title,rec.title);
+      lowTitleRejects.push(`${rec.source} (${(sim.score*100|0)}%${sim.reason?`, ${sim.reason}`:""})`);
       continue;
     }
     if(titleAuthorMismatch(e,rec)){
@@ -1020,10 +1094,8 @@ async function verifyEntry(e){
       continue;
     }
     recs.push(rec);
-    // Stop early once a source agrees on everything — no need to ask the rest.
-    // (Without cross-check we already stop at the first hit; with cross-check we
-    //  keep going only while there's still a discrepancy worth a second opinion.)
-    if(!V.crossCheck || recordConfirms(e,rec,doi,title)) break;
+    // Stop at the first acceptable source; database order controls priority.
+    break;
   }
 
   if(!recs.length){
@@ -1041,6 +1113,7 @@ async function verifyEntry(e){
   const primary=recs[0];
   out.source=recs.map(r=>r.source).join(" + ");
   out.matchedTitle=primary.title; out.matchedDoi=primary.doi; out.matchedUrl=primary.url;
+  if(primary.doi) out.doiPreview=doiPreviewRecord(primary);
 
   const efYear=(e.fields.year||"").replace(/\D/g,"");
   const efAuthor=normAuthorLast(entryFirstAuthorLast(e));
@@ -1059,8 +1132,8 @@ async function verifyEntry(e){
     if(r.firstAuthor && efAuthor && !authorLastMatches(efAuthor,normAuthorLast(r.firstAuthor)))
       out.notes.push(`First author: file=${efAuthor} vs ${r.source}=${normAuthorLast(r.firstAuthor)}`);
     if(r.title && title){
-      const sim=jaccard(tok(title),tok(r.title));
-      if(sim<V.titleSimThreshold) out.notes.push(`Low title similarity vs ${r.source} (${(sim*100|0)}%) — possible mismatch/fabrication`);
+      const sim=titleSimilarity(title,r.title);
+      if(!sim.passes(V.titleSimThreshold)) out.notes.push(`Low title similarity vs ${r.source} (${(sim.score*100|0)}%${sim.reason?`, ${sim.reason}`:""}) — possible mismatch/fabrication`);
     }
     if(r.journal && efJournal && !journalMatch(efJournal,r.journal)){
       out.notes.push(`Journal/venue: file="${efJournal}" vs ${r.source}="${r.journal}"`);
@@ -1072,13 +1145,37 @@ async function verifyEntry(e){
     }
   }
   // DOI suggestion if we have one and the entry doesn't.
-  const suggestDoi=recs.map(r=>r.doi).find(Boolean);
-  if(suggestDoi && !doi){ out.notes.push(`Missing DOI; found ${suggestDoi}`); addFix("doi",normDoi(suggestDoi),`Add DOI ${normDoi(suggestDoi)}`); }
-  if(doi && suggestDoi && normDoi(suggestDoi)!==doi){ out.notes.push(`DOI differs: file=${doi} vs found=${normDoi(suggestDoi)}`); addFix("doi",normDoi(suggestDoi),`Set DOI → ${normDoi(suggestDoi)}`); }
+  const doiRec=recs.find(r=>r.doi);
+  const suggestDoi=doiRec&&doiRec.doi;
+  const doiConfidence=doiSuggestionConfidence(e,doiRec,title);
+  if(doiRec) out.doiPreview=doiPreviewRecord(doiRec);
+  if(suggestDoi && !doi){
+    if(doiConfidence.ok){ out.notes.push(`Missing DOI; found ${suggestDoi}`); addFix("doi",normDoi(suggestDoi),`Add DOI ${normDoi(suggestDoi)}`); }
+    else out.notes.push(`Possible DOI found but not suggested: ${suggestDoi} (${doiConfidence.reason}).`);
+  }
+  if(doi && suggestDoi && normDoi(suggestDoi)!==doi){
+    if(doiConfidence.ok){ out.notes.push(`DOI differs: file=${doi} vs found=${normDoi(suggestDoi)}`); addFix("doi",normDoi(suggestDoi),`Set DOI → ${normDoi(suggestDoi)}`); }
+    else out.notes.push(`Different DOI found but not suggested: ${normDoi(suggestDoi)} (${doiConfidence.reason}).`);
+  }
 
   await augmentVerify(e,out,title);
   if(out.notes.length===0) out.notes.push(`Confirmed by ${out.source}.`);
   return out;
+}
+function doiPreviewRecord(r){
+  if(!r||!r.doi) return null;
+  return {
+    doi:normDoi(r.doi),
+    url:r.url||`https://doi.org/${normDoi(r.doi)}`,
+    title:r.title||"",
+    year:r.year||"",
+    firstAuthor:r.firstAuthor||"",
+    journal:r.journal||"",
+    pages:r.pages||"",
+    source:r.source||"",
+    lookup:r._lookup||"",
+    note:r.note||""
+  };
 }
 
 /* URL liveness + published-version lookup, shared by found & not-found paths */
@@ -1107,8 +1204,27 @@ async function augmentVerify(e,out,title){
     }catch(err){}
   }
 }
-function tok(s){return new Set(s.toLowerCase().replace(/[{}]/g,"").replace(/[^a-z0-9\s]/g," ").split(/\s+/).filter(w=>w.length>2));}
+function titleTokens(s){
+  return String(s||"").toLowerCase()
+    .replace(/[{}]/g,"")
+    .replace(/[^a-z0-9\s]/g," ")
+    .split(/\s+/)
+    .filter(w=>w.length>2 && !STOPWORDS.has(w));
+}
+function tok(s){return new Set(titleTokens(s));}
 function jaccard(a,b){const i=[...a].filter(x=>b.has(x)).length;const u=new Set([...a,...b]).size;return u?i/u:0;}
+function titleSimilarity(a,b){
+  const A=tok(a), B=tok(b);
+  const score=jaccard(A,B);
+  const leadA=titleTokens(a).slice(0,3), leadB=titleTokens(b).slice(0,3);
+  const leadOverlap=leadA.some(w=>leadB.includes(w));
+  const leadMismatch=leadA.length>=2 && leadB.length>=2 && !leadOverlap && score<0.8;
+  return {
+    score,
+    reason: leadMismatch ? "lead terms differ" : "",
+    passes(threshold){ return score>=threshold && !leadMismatch; }
+  };
+}
 
 /* Journal/venue comparison that tolerates abbreviations:
    "J. Mach. Learn. Res." should still match "Journal of Machine Learning Research".
@@ -1455,10 +1571,13 @@ function paintVerify(e){
   if(e._resolved){ slot.innerHTML=""; return; }
   const v=e._verify;
   const cls=v.status==="found"?(v.notes.some(n=>/mismatch|differs|fabrication|Missing|Year:|author:|Journal\/venue:|Pages:|unreachable|timed out/i.test(n))?"w":"ok"):"e";
-  const link=v.matchedUrl?` <a href="${escapeHtml(v.matchedUrl)}" target="_blank" rel="noopener">${escapeHtml(v.matchedDoi||"link")}</a>`
-            :v.matchedDoi?` <span class="muted">[${escapeHtml(v.matchedDoi)}]</span>`:"";
+  const preview=v.doiPreview;
+  const link=preview?` <a href="${escapeHtml(preview.url)}" target="_blank" rel="noopener">${escapeHtml(preview.doi)}</a>`:
+    v.matchedUrl?` <a href="${escapeHtml(v.matchedUrl)}" target="_blank" rel="noopener">${escapeHtml(v.matchedDoi||"link")}</a>`:
+    v.matchedDoi?` <a href="https://doi.org/${escapeHtml(v.matchedDoi)}" target="_blank" rel="noopener">${escapeHtml(v.matchedDoi)}</a>`:"";
   let rows=`<div class="issue ${cls}"><span class="ic">⌕</span>`+
     `<span><b>${escapeHtml(v.source||v.status)}</b>: ${v.notes.map(escapeHtml).join("; ")}${link}</span></div>`;
+  if(preview) rows+=doiPreviewHtml(preview);
   // URL liveness as its own coloured row
   if(v.urlStatus){
     const uok=v.urlStatus.ok;
@@ -1483,6 +1602,20 @@ function paintVerify(e){
   slot.querySelectorAll(".vfixbtn").forEach(b=>b.onclick=ev=>{ev.preventDefault();
     const f=v.fixes[+b.dataset.vf]; v.fixes.splice(+b.dataset.vf,1);  // consume it
     applyFix(e,{kind:"setField",field:f.field,value:f.value});});
+}
+function doiPreviewHtml(p){
+  const meta=[
+    ["Title",p.title],
+    ["Year",p.year],
+    ["First author",p.firstAuthor],
+    ["Journal",p.journal],
+    ["Pages",p.pages],
+    ["Source",p.lookup?`${p.source} (${p.lookup} lookup)`:p.source],
+    ["Note",p.note]
+  ].filter(([,v])=>v);
+  return `<div class="doi-preview"><div class="head"><b>DOI preview</b>`+
+    `<a href="${escapeHtml(p.url)}" target="_blank" rel="noopener">${escapeHtml(p.doi)}</a></div>`+
+    `<div class="grid">${meta.map(([k,v])=>`<div class="k">${escapeHtml(k)}</div><div class="v">${escapeHtml(v)}</div>`).join("")}</div></div>`;
 }
 function cssEsc(s){return (window.CSS&&CSS.escape)?CSS.escape(s):s.replace(/["\\]/g,"\\$&");}
 
@@ -1577,15 +1710,12 @@ function buildConfigUI(){
   </div></details>
 
   <details class="cfg"><summary>Online verification</summary><div class="inner">
-    <p class="hint">Cross-checks title, year, first author and DOI against the databases below — by DOI when present, else by title search. All are free and CORS-enabled.</p>
-    <div class="field"><label>Databases (tick to enable)</label>
-      ${srcChk("crossref","Crossref","journals, books, conferences — the broadest source")}
-      ${srcChk("openalex","OpenAlex","open scholarly index, very broad coverage")}
-      ${srcChk("semanticscholar","Semantic Scholar","strong CS / AI / biomed coverage")}
-      ${srcChk("datacite","DataCite","datasets, software & preprints with DOIs (DOI only)")}
-      ${srcChk("dblp","DBLP","computer-science bibliography (title only)")}
+    <p class="hint">Checks title, year, first author and DOI against the databases below, in order — by DOI when present, else by title search.</p>
+    <div class="field"><label>Databases</label>
+      <div id="vf_sources">
+        ${normalizeSourceOrder(C.verification.sourceOrder,C.verification.sources).map(srcRow).join("")}
+      </div>
     </div>
-    <div class="row"><input type="checkbox" id="vf_cross" ${C.verification.crossCheck?"checked":""}><label>Cross-check: query <i>all</i> enabled sources and compare (slower, stricter)</label></div>
     <div class="row" style="align-items:flex-start"><input type="checkbox" id="vf_urls" ${C.verification.checkUrls?"checked":""}><label>Check <code class="k">url</code> links are still alive <span class="muted">— browsers can only detect a dead host/timeout cross-origin, not a live 404 page</span></label></div>
     <div class="row" style="align-items:flex-start"><input type="checkbox" id="vf_pub" ${C.verification.findPublished?"checked":""}><label>Find published version of arXiv / preprints <span class="muted">— searches Crossref &amp; OpenAlex for a peer-reviewed version with a DOI</span></label></div>
     <div class="field" style="margin-top:12px"><label>Polite-pool email</label>
@@ -1601,13 +1731,21 @@ function buildConfigUI(){
     document.querySelectorAll("#ks_mode button").forEach(x=>x.classList.remove("on"));
     b.classList.add("on");
   });
+  document.querySelectorAll("[data-move]").forEach(b=>b.onclick=()=>{
+    const row=b.closest(".source-row");
+    const box=row&&row.parentElement;
+    if(!row||!box) return;
+    if(b.dataset.move==="up" && row.previousElementSibling) box.insertBefore(row,row.previousElementSibling);
+    if(b.dataset.move==="down" && row.nextElementSibling) box.insertBefore(row.nextElementSibling,row);
+  });
 
   function seg(val,label,cur){return `<button data-v="${val}" class="${cur===val?'on':''}">${label}</button>`;}
   function opt(arr,cur){return arr.map(v=>`<option ${v===cur?'selected':''}>${v}</option>`).join("");}
   function chk(key,label){return `<div class="row"><input type="checkbox" data-ck="${key}" ${C.checks[key]?"checked":""}><label>${label}</label></div>`;}
-  function srcChk(key,label,desc){const on=(C.verification.sources||[]).includes(key);
-    return `<div class="row" style="align-items:flex-start"><input type="checkbox" data-src="${key}" ${on?"checked":""}>`+
-      `<label><b>${label}</b> <span class="muted">— ${desc}</span></label></div>`;}
+  function srcRow(key){const on=(C.verification.sources||[]).includes(key), s=SOURCES[key];
+    return `<div class="source-row" data-src-row="${key}"><input type="checkbox" data-src="${key}" ${on?"checked":""}>`+
+      `<label><b>${s.label}</b> <span class="muted">— ${SOURCE_DESCRIPTIONS[key]||""}</span></label>`+
+      `<div class="source-move"><button type="button" data-move="up" title="Move up">↑</button><button type="button" data-move="down" title="Move down">↓</button></div></div>`;}
   function esc(s){return escapeHtml(s);}
   function attr(s){return escapeHtml(s);}
 }
@@ -1638,8 +1776,8 @@ function readConfigUI(silent){
   C.ordering.direction=g("or_dir").value;
   document.querySelectorAll("[data-ck]").forEach(cb=>C.checks[cb.dataset.ck]=cb.checked);
   // verification
+  C.verification.sourceOrder=[...document.querySelectorAll("[data-src-row]")].map(row=>row.dataset.srcRow).filter(s=>SOURCES[s]);
   C.verification.sources=[...document.querySelectorAll("[data-src]")].filter(cb=>cb.checked).map(cb=>cb.dataset.src);
-  C.verification.crossCheck=g("vf_cross").checked;
   C.verification.checkUrls=g("vf_urls").checked;
   C.verification.findPublished=g("vf_pub").checked;
   C.verification.mailto=g("vf_mailto").value.trim();
