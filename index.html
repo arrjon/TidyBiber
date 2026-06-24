@@ -285,7 +285,7 @@ const DEFAULT_CONFIG = {
     lowercaseFieldNames: true, // Author= -> author=
     trailingComma: true,
     dropFields: ["abstract", "rating", "read", "issn", "isbn", "langid", "language", "eprint", "elocation-id", "mesh", "annote",
-      "pubstate", "eprinttype", "eprintclass", "primaryclass", "eprint", "shortjournal", "shorttitle", "pmid", "pst", "pmc", "copyright",
+      "pubstate", "eprinttype", "eprintclass", "primaryclass", "shortjournal", "shorttitle", "pmid", "pst", "pmc", "copyright",
       "timestamp"],  // remove these fields from the working copy
     dropUrlWhenDoi: true,      // remove url when doi is present
     titlecaseTitles: false     // Preserve title spelling by default; opt in to Title-Case
@@ -309,7 +309,9 @@ const DEFAULT_CONFIG = {
     sourceOrder: ["crossref","pubmed","openalex","semanticscholar","datacite","dblp"],
     sources: ["crossref","pubmed","openalex","semanticscholar","datacite"],
     mailto: "",                   // optional: your email for Crossref/OpenAlex "polite pool" (faster, nicer). Blank = anonymous access.
-    titleSimThreshold: 0.5,       // below this Jaccard similarity → flag possible mismatch
+    titleSimThreshold: 0.6,       // below this Jaccard similarity → flag possible mismatch
+                                  // (0.6 matches the floor used for published-version lookup;
+                                  //  weak title-only DOI suggestions need 0.75)
     delayMs: 120,                 // pause between entries to stay polite to the APIs
     checkUrls: true,              // ping the url field to detect dead links
     urlTimeoutMs: 8000,           // give up on a url after this long
@@ -382,11 +384,12 @@ function parseBib(text){
     const closer = opener==="{" ? "}" : ")";
     i++; // past opener
     if(type==="comment"||type==="string"||type==="preamble"){
-      // capture whole block verbatim
-      let depth=1, buf="";
+      // capture whole block verbatim, counting the SAME delimiter that opened it.
+      // @string(...) is as valid as @string{...}; tracking only braces here would
+      // overrun a paren-delimited block and swallow every entry after it.
+      let depth=1;
       while(i<n && depth>0){
-        if(text[i]==="{")depth++; else if(text[i]==="}")depth--;
-        if(depth>0)buf+=text[i];
+        if(text[i]===opener)depth++; else if(text[i]===closer)depth--;
         i++;
       }
       preambleParts.push(text.slice(at,i));
@@ -944,7 +947,7 @@ async function dblpByTitle(title){
 async function checkUrl(url){
   if(!url) return null;
   const ctrl=new AbortController();
-  const t=setTimeout(()=>ctrl.abort(),CONFIG.verification.urlTimeoutMs||8000);
+  const t=setTimeout(()=>ctrl.abort(),CONFIG.verification.urlTimeoutMs||DEFAULT_CONFIG.verification.urlTimeoutMs);
   try{
     await fetch(url,{method:"GET",mode:"no-cors",redirect:"follow",signal:ctrl.signal});
     clearTimeout(t); return {ok:true};
@@ -1014,21 +1017,6 @@ async function querySource(name,doi,title){
   return null;
 }
 
-/* Does this single record agree with the entry on every field we can compare?
-   Used to short-circuit cross-checking: one clean confirmation is enough. */
-function recordConfirms(e,r,doi,title){
-  if(!r.title && !r.doi) return false;               // nothing solid to confirm against
-  const V=CONFIG.verification;
-  const efYear=(e.fields.year||e.fields.date||"").replace(/\D/g,"").slice(0,4);
-  const efAuthor=normAuthorLast(entryFirstAuthorLast(e));
-  if(efYear && r.year && r.year!==efYear) return false;
-  if(efAuthor && r.firstAuthor && !authorLastMatches(efAuthor,normAuthorLast(r.firstAuthor))) return false;
-  if(title && r.title && !titleSimilarity(title,r.title).passes(V.titleSimThreshold)) return false;
-  if(doi && r.doi && normDoi(r.doi)!==doi) return false;
-  const efJournal=(e.fields.journal||e.fields.journaltitle||e.fields.booktitle||"").replace(/[{}]/g,"").trim();
-  if(efJournal && r.journal && !journalMatch(efJournal,r.journal)) return false;
-  return true;
-}
 function lowTitleSimilarity(r,title){
   if(!title || !r.title) return false;
   return !titleSimilarity(title,r.title).passes(CONFIG.verification.titleSimThreshold);
@@ -1249,8 +1237,12 @@ async function augmentVerify(e,out,title){
       if(pub){ out.published=pub;
         out.notes.push(`Published version found: ${pub.doi}${pub.year?` (${pub.year})`:""}`);
         const cur=e.fields.doi?normDoi(e.fields.doi):null;
-        if(pub.doi && normDoi(pub.doi)!==cur && !out.fixes.some(f=>f.field==="doi"))
+        if(pub.doi && normDoi(pub.doi)!==cur && !out.fixes.some(f=>f.field==="doi")){
           out.fixes.push({field:"doi",value:normDoi(pub.doi),label:`Use published DOI ${normDoi(pub.doi)}`});
+          // the proposed DOI is now the published one, not the preprint matched earlier —
+          // show the published record's metadata in the preview so they correspond
+          out.doiPreview=doiPreviewRecord(pub);
+        }
       }else out.notes.push("Preprint — no published version found yet.");
     }catch(err){}
   }
@@ -1602,7 +1594,7 @@ $("#btnVerify").onclick=async()=>{
     paintVerify(e);
     done++; btn.textContent=`Stop (${done}/${list.length})`;
     if(!VERIFYING) break;
-    await new Promise(r=>setTimeout(r,CONFIG.verification.delayMs||120)); // be polite to the APIs
+    await new Promise(r=>setTimeout(r,CONFIG.verification.delayMs||DEFAULT_CONFIG.verification.delayMs)); // be polite to the APIs
   }
   const stopped=!VERIFYING && done<list.length;
   VERIFYING=false; btn.classList.remove("running"); btn.textContent="Verify filtered…";
@@ -1814,7 +1806,7 @@ function readConfigUI(silent){
   C.protectedWords=splitList(g("cf_protect").value);
   try{C.requiredFields=JSON.parse(g("cf_required").value);}catch(e){if(!silent)toast("Required-fields JSON invalid — kept old");}
   C.optionalFields=splitList(g("cf_optional").value);
-  C.formatting.indent=parseInt(g("fm_indent").value)||2;
+  C.formatting.indent=parseInt(g("fm_indent").value)||DEFAULT_CONFIG.formatting.indent;
   C.formatting.quoteStyle=g("fm_quote").value;
   C.formatting.alignEquals=g("fm_align").checked;
   C.formatting.lowercaseType=g("fm_lct").checked;
@@ -1833,9 +1825,9 @@ function readConfigUI(silent){
   C.verification.checkUrls=g("vf_urls").checked;
   C.verification.findPublished=g("vf_pub").checked;
   C.verification.mailto=g("vf_mailto").value.trim();
-  const sim=parseFloat(g("vf_sim").value); C.verification.titleSimThreshold=isNaN(sim)?0.5:sim;
-  C.verification.delayMs=parseInt(g("vf_delay").value)||120;
-  C.verification.urlTimeoutMs=parseInt(g("vf_utimeout").value)||8000;
+  const sim=parseFloat(g("vf_sim").value); C.verification.titleSimThreshold=isNaN(sim)?DEFAULT_CONFIG.verification.titleSimThreshold:sim;
+  C.verification.delayMs=parseInt(g("vf_delay").value)||DEFAULT_CONFIG.verification.delayMs;
+  C.verification.urlTimeoutMs=parseInt(g("vf_utimeout").value)||DEFAULT_CONFIG.verification.urlTimeoutMs;
 }
 function splitList(s){return s.split(/[,\n]/).map(x=>x.trim()).filter(Boolean);}
 
