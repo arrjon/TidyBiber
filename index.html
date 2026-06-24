@@ -435,7 +435,11 @@ function lintAll(entries){
     for(const r of req){
       const alts=r.split("|");
       if(!alts.some(a=>e.fields[a]&&e.fields[a].length)){
-        if(alts.includes("booktitle") && isProceedingsEventTitleAlias(e,"eventtitle")){
+        const arxivJournal=alts.includes("journal") ? arxivPreprintJournal(e) : "";
+        if(arxivJournal){
+          add("warn",`Missing journal; DOI/URL looks like arXiv`,arxivJournal,
+            [{label:"Set journal → arXiv preprint",kind:"setField",field:"journal",value:arxivJournal,auto:true}]);
+        }else if(alts.includes("booktitle") && isProceedingsEventTitleAlias(e,"eventtitle")){
           add("warn","Use booktitle instead of eventtitle for proceedings entries","booktitle",
             [{label:"Rename eventtitle → booktitle",kind:"renameField",field:"eventtitle",to:"booktitle",auto:true}]);
         }else{
@@ -531,6 +535,10 @@ function lintAll(entries){
 }
 function isProceedingsEventTitleAlias(e,f){
   return f==="eventtitle" && ["inproceedings","conference"].includes(e.type) && !e.fields.booktitle && !!e.fields.eventtitle;
+}
+function arxivPreprintJournal(e){
+  const id=arxivId(e);
+  return id ? `arXiv preprint arXiv:${id}` : "";
 }
 function escapeRe(s){return s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");}
 function normDoi(d){
@@ -851,15 +859,18 @@ function arxivId(e){
   // explicit eprint field (with arXiv archiveprefix, or anything that looks like an id)
   if(f.eprint){
     const ap=(f.archiveprefix||f.eprinttype||"").toLowerCase();
-    if(ap.includes("arxiv")||!ap) {const m=f.eprint.match(/\d{4}\.\d{4,5}(v\d+)?|[a-z-]+\/\d{7}/i); if(m)return m[0];}
+    if(ap.includes("arxiv")||!ap) {const m=f.eprint.match(/\d{4}\.\d{4,5}(v\d+)?|[a-z-]+\/\d{7}/i); if(m)return cleanArxivId(m[0]);}
   }
   // arxiv DOI: 10.48550/arXiv.2103.12345
-  if(f.doi){ const m=f.doi.match(/10\.48550\/arxiv\.(\S+)/i); if(m)return m[1].replace(/[{}]/g,""); }
+  if(f.doi){ const m=f.doi.match(/10\.48550\/arxiv\.([^\s"',}]+)/i); if(m)return cleanArxivId(m[1]); }
   // any url/note/howpublished pointing at arxiv.org/abs/<id>
   for(const k of ["url","note","howpublished","journal"]){
-    if(f[k]){ const m=f[k].match(/arxiv\.org\/(?:abs|pdf)\/([^\s",}]+?)(?:v\d+)?(?:\.pdf)?(?=[\s",}]|$)/i); if(m)return m[1]; }
+    if(f[k]){ const m=f[k].match(/arxiv\.org\/(?:abs|pdf)\/([^\s"',}]+)/i); if(m)return cleanArxivId(m[1]); }
   }
   return null;
+}
+function cleanArxivId(id){
+  return String(id||"").replace(/[{}]/g,"").replace(/\.pdf$/i,"").replace(/[?#].*$/,"").replace(/[),.;:]+$/,"");
 }
 function isPreprint(e){
   return !!arxivId(e) ||
