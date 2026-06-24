@@ -247,7 +247,7 @@ const DEFAULT_CONFIG = {
   // Fields allowed but optional; anything else triggers an "unexpected field" warning.
   optionalFields: ["volume","number","pages","month","doi","url","editor",
     "publisher","series","address","edition","organization","school","institution","type","keywords",
-    "booktitle","journal","location","articleno","numpages","issue"],
+    "booktitle","journal","location","articleno","numpages","issue","chapter"],
   // Words that must keep exact casing — protected with {braces} in titles.
   protectedWords: ["Bayesian","Gaussian","Markov","Monte Carlo","Euler","Newton",
     "Fourier","Hilbert","Lipschitz","Gibbs","Poisson","Laplace","Hessian","Jacobian",
@@ -304,7 +304,7 @@ const DEFAULT_CONFIG = {
   }
 };
 
-const STOPWORDS = new Set(("a an and are as at be by de do does for from has he in is it its of on or "+
+const STOPWORDS = new Set(("a an and are as at be by de do does die for from has he in is it its of on or "+
   "that the to was were will with we our this these those an via using toward towards "+
   "into over under about between among").split(" "));
 const MONTHS = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
