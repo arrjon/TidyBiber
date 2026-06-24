@@ -242,11 +242,12 @@ const DEFAULT_CONFIG = {
     incollection:  ["author","title","booktitle","publisher","year|date"],
     inbook:        ["author","title","chapter|booktitle","publisher","year|date"],
     phdthesis:     ["author","title","school|institution","year|date"],
+    techreport:    ["author","title","institution|organization","year|date"],
   },
   // Fields allowed but optional; anything else triggers an "unexpected field" warning.
   optionalFields: ["volume","number","pages","month","doi","url","editor",
     "publisher","series","address","edition","organization","school","institution","type","keywords",
-    "booktitle","journal","location","articleno","numpages"],
+    "booktitle","journal","location","articleno","numpages","issue"],
   // Words that must keep exact casing — protected with {braces} in titles.
   protectedWords: ["Bayesian","Gaussian","Markov","Monte Carlo","Euler","Newton",
     "Fourier","Hilbert","Lipschitz","Gibbs","Poisson","Laplace","Hessian","Jacobian",
@@ -272,7 +273,8 @@ const DEFAULT_CONFIG = {
     lowercaseFieldNames: true, // Author= -> author=
     trailingComma: true,
     dropFields: ["abstract", "rating", "read", "issn", "isbn", "langid", "language", "eprint", "elocation-id", "mesh", "annote",
-      "pubstate", "eprinttype", "eprintclass", "eprint", "shortjournal", "shorttitle", "pmid", "pst", "pmc", "copyright"],  // remove these fields from the working copy
+      "pubstate", "eprinttype", "eprintclass", "primaryclass", "eprint", "shortjournal", "shorttitle", "pmid", "pst", "pmc", "copyright",
+      "timestamp"],  // remove these fields from the working copy
     titlecaseTitles: false     // Preserve title spelling by default; opt in to Title-Case
   },
   ordering: {
@@ -302,7 +304,7 @@ const DEFAULT_CONFIG = {
   }
 };
 
-const STOPWORDS = new Set(("a an and are as at be by de for from has he in is it its of on or "+
+const STOPWORDS = new Set(("a an and are as at be by de do does for from has he in is it its of on or "+
   "that the to was were will with we our this these those an via using toward towards "+
   "into over under about between among").split(" "));
 const MONTHS = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
@@ -667,10 +669,12 @@ function applyDropFields(entries){
   if(!drops.size) return 0;
   let removed=0;
   for(const e of entries){
+    let removedFromEntry=0;
     for(const f of Object.keys(e.fields)){
-      if(drops.has(f.toLowerCase())){ delete e.fields[f]; removed++; }
+      if(drops.has(f.toLowerCase())){ delete e.fields[f]; removed++; removedFromEntry++; }
     }
     e.order=e.order.filter(f=>!drops.has(f.toLowerCase()));
+    if(removedFromEntry) e._dirty=true;
   }
   return removed;
 }
