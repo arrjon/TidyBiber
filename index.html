@@ -565,10 +565,10 @@ function verificationIssue(e){
   if(!v || v.status==="unchecked") return null;
   if(v.status==="error") return {sev:"err",msg:`Verification error: ${(v.notes&&v.notes[0])||"check failed"}`};
   if(v.status==="notfound") return {sev:"err",msg:`Verification: ${(v.notes&&v.notes[0])||"no match found"}`};
-  const hasProblem=v.notes&&v.notes.some(n=>/mismatch|differs|fabrication|Missing|Year:|author:|Journal\/venue:|Pages:|unreachable|timed out/i.test(n));
+  const hasProblem=v.notes&&v.notes.some(n=>/mismatch|differs|fabrication|Missing|Year:|author:|Author list|Journal\/venue:|Pages:|unreachable|timed out/i.test(n));
   const badUrl=v.urlStatus&&!v.urlStatus.ok;
   if(v.status==="found" && (hasProblem||badUrl)){
-    const note=(v.notes&&v.notes.find(n=>/mismatch|differs|fabrication|Missing|Year:|author:|Journal\/venue:|Pages:/i.test(n))) ||
+    const note=(v.notes&&v.notes.find(n=>/mismatch|differs|fabrication|Missing|Year:|author:|Author list|Journal\/venue:|Pages:/i.test(n))) ||
       (badUrl?`URL ${v.urlStatus.reason}`:"verification warning");
     return {sev:"warn",msg:`Verification: ${note}`};
   }
@@ -790,7 +790,7 @@ function exportBib(){
 /* ---------- 7. ONLINE VERIFIER (multi-database) ------------ */
 /* Each source returns a normalized record, or null. All of these send
    Access-Control-Allow-Origin:* so they work from a sandboxed page.
-   Normalized record: {title, year, doi, firstAuthor, source, url}.       */
+   Normalized record: {title, year, doi, firstAuthor, authors, source, url}. */
 
 const SOURCES = {
   crossref:        { label:"Crossref",        byDoi:crossrefByDoi,    byTitle:crossrefByTitle },
@@ -819,6 +819,7 @@ function mailtoParam(sep){
   return m?`${sep}mailto=${encodeURIComponent(m)}`:"";
 }
 async function getJSON(url){ const r=await fetch(url,{headers:{Accept:"application/json"}}); return r.ok?r.json():null; }
+function compactJoin(parts){return parts.map(x=>String(x||"").trim()).filter(Boolean).join(" ");}
 
 /* --- Crossref --- */
 async function crossrefByDoi(doi){
@@ -832,9 +833,10 @@ async function crossrefByTitle(title){
 }
 function normCrossref(m){
   const dp=(m.issued&&m.issued["date-parts"])||(m.published&&m.published["date-parts"]);
+  const authors=((m.author||[]).map(a=>a.name||compactJoin([a.given,a.family])).filter(Boolean));
   return { title:(m.title&&m.title[0])||"", year:dp&&dp[0]&&dp[0][0]?String(dp[0][0]):"",
     doi:m.DOI||"", firstAuthor:(m.author&&m.author[0]&&(m.author[0].family||""))||"",
-    journal:(m["container-title"]&&m["container-title"][0])||"", pages:m.page||"",
+    authors:authors.join("; "), journal:(m["container-title"]&&m["container-title"][0])||"", pages:m.page||"",
     source:"Crossref", url:m.URL||(m.DOI?`https://doi.org/${m.DOI}`:"") };
 }
 
@@ -859,8 +861,9 @@ function normPubMed(p){
   const articleIds=p.articleids||[];
   const doi=((articleIds.find(x=>String(x.idtype||"").toLowerCase()==="doi")||{}).value)||"";
   const fa=p.authors&&p.authors[0]&&p.authors[0].name||"";
+  const authors=((p.authors||[]).map(a=>a.name).filter(Boolean));
   return { title:(p.title||"").replace(/\.$/,""), year:p.pubdate?String(p.pubdate).match(/\d{4}/)?.[0]||"":"",
-    doi, firstAuthor:fa.split(/\s+/)[0]||"", journal:p.fulljournalname||p.source||"",
+    doi, firstAuthor:fa.split(/\s+/)[0]||"", authors:authors.join("; "), journal:p.fulljournalname||p.source||"",
     pages:p.pages||"", source:"PubMed", url:p.uid?`https://pubmed.ncbi.nlm.nih.gov/${p.uid}/`:(doi?`https://doi.org/${doi}`:"") };
 }
 
@@ -876,12 +879,13 @@ async function openalexByTitle(title){
 }
 function normOpenAlex(w){
   const fa=w.authorships&&w.authorships[0]&&w.authorships[0].author&&w.authorships[0].author.display_name||"";
+  const authors=((w.authorships||[]).map(a=>a.author&&a.author.display_name).filter(Boolean));
   const venue=w.primary_location&&w.primary_location.source&&w.primary_location.source.display_name||"";
   const b=w.biblio||{};
   const pages=b.first_page?(b.last_page&&b.last_page!==b.first_page?`${b.first_page}-${b.last_page}`:b.first_page):"";
   return { title:w.title||w.display_name||"", year:w.publication_year?String(w.publication_year):"",
     doi:(w.doi||"").replace(/^https?:\/\/(dx\.)?doi\.org\//i,""),
-    firstAuthor:fa.split(/\s+/).pop()||"", journal:venue, pages,
+    firstAuthor:fa.split(/\s+/).pop()||"", authors:authors.join("; "), journal:venue, pages,
     source:"OpenAlex", url:w.doi||w.id||"" };
 }
 
@@ -897,8 +901,9 @@ async function s2ByTitle(title){
 }
 function normS2(p){
   const fa=p.authors&&p.authors[0]&&p.authors[0].name||"";
+  const authors=((p.authors||[]).map(a=>a.name).filter(Boolean));
   return { title:p.title||"", year:p.year?String(p.year):"",
-    doi:(p.externalIds&&p.externalIds.DOI)||"", firstAuthor:fa.split(/\s+/).pop()||"",
+    doi:(p.externalIds&&p.externalIds.DOI)||"", firstAuthor:fa.split(/\s+/).pop()||"", authors:authors.join("; "),
     journal:(p.journal&&p.journal.name)||p.venue||"", pages:(p.journal&&p.journal.pages)||"",
     source:"Semantic Scholar", url:p.externalIds&&p.externalIds.DOI?`https://doi.org/${p.externalIds.DOI}`:"" };
 }
@@ -909,8 +914,9 @@ async function dataciteByDoi(doi){
   const a=j&&j.data&&j.data.attributes;
   if(!a)return null;
   const fa=a.creators&&a.creators[0]&&(a.creators[0].familyName||a.creators[0].name||"")||"";
+  const authors=((a.creators||[]).map(c=>c.name||compactJoin([c.givenName,c.familyName])).filter(Boolean));
   return { title:(a.titles&&a.titles[0]&&a.titles[0].title)||"", year:a.publicationYear?String(a.publicationYear):"",
-    doi:a.doi||"", firstAuthor:fa.split(/[\s,]+/).filter(Boolean)[0]||"",
+    doi:a.doi||"", firstAuthor:fa.split(/[\s,]+/).filter(Boolean)[0]||"", authors:authors.join("; "),
     journal:(a.container&&a.container.title)||a.publisher||"", pages:"", source:"DataCite",
     url:a.url||(a.doi?`https://doi.org/${a.doi}`:"") };
 }
@@ -921,9 +927,10 @@ async function dblpByTitle(title){
   const hit=j&&j.result&&j.result.hits&&j.result.hits.hit&&j.result.hits.hit[0]&&j.result.hits.hit[0].info;
   if(!hit)return null;
   let fa=""; const au=hit.authors&&hit.authors.author;
+  const authors=(au?(Array.isArray(au)?au:[au]):[]).map(a=>String((a&&(a.text||a))||"")).filter(Boolean);
   if(au){ const first=Array.isArray(au)?au[0]:au; fa=(first&&(first.text||first))||""; }
   return { title:(hit.title||"").replace(/\.$/,""), year:hit.year?String(hit.year):"",
-    doi:hit.doi||"", firstAuthor:String(fa).split(/\s+/).pop()||"",
+    doi:hit.doi||"", firstAuthor:String(fa).split(/\s+/).pop()||"", authors:authors.join("; "),
     journal:hit.venue||"", pages:hit.pages||"", source:"DBLP",
     url:hit.ee||hit.url||"" };
 }
@@ -1027,8 +1034,51 @@ function lowTitleSimilarity(r,title){
   return !titleSimilarity(title,r.title).passes(CONFIG.verification.titleSimThreshold);
 }
 function normAuthorLast(s){ return keyNamePart(translitKey(String(s||""))).toLowerCase(); }
+function normAuthorFirst(s){ return keyNamePart(translitKey(String(s||""))).toLowerCase(); }
 function authorLastMatches(a,b){
   return !!(a && b && (a===b || a.endsWith("-"+b) || b.endsWith("-"+a)));
+}
+function authorFirstMatches(a,b){
+  if(!a.first || !b.first) return true;
+  if(a.first===b.first) return true;
+  return (a.firstInitial || b.firstInitial) && a.first[0]===b.first[0];
+}
+function authorPartsFromName(raw){
+  const s=String(raw||"").trim().replace(/[{}]/g,"");
+  if(!s) return null;
+  let last="", first="", firstRaw="";
+  if(s.includes(",")){
+    const parts=s.split(",");
+    last=parts[0]; firstRaw=parts.slice(1).join(" ").trim().split(/\s+/)[0]||""; first=firstRaw;
+  }else{
+    const parts=s.split(/\s+/).filter(Boolean);
+    const tail=parts[parts.length-1]||"";
+    if(parts.length>=2 && /^[A-Z]{1,4}\.?$/.test(tail)){
+      last=parts[0]; firstRaw=tail; first=tail;
+    }else{
+      last=tail; firstRaw=parts[0]||""; first=firstRaw;
+    }
+  }
+  const firstInitial=/^[A-Z]{1,4}\.?$/.test(firstRaw) || /^[A-Za-z]\.?$/.test(firstRaw);
+  last=normAuthorLast(last); first=normAuthorFirst(first);
+  return last?{last,first,firstInitial}:null;
+}
+function authorPartsFromBib(raw){
+  return String(raw||"").split(/\s+and\s+/i).map(authorPartsFromName).filter(Boolean);
+}
+function authorPartsFromList(raw){
+  return String(raw||"").split(/\s*;\s*/).map(authorPartsFromName).filter(Boolean);
+}
+function authorListCompare(e,r){
+  const file=authorPartsFromBib(e.fields.author||e.fields.editor||"");
+  const db=authorPartsFromList(r.authors||"");
+  if(!file.length || !db.length) return null;
+  const matched=file.filter(a=>db.some(b=>authorLastMatches(a.last,b.last) && authorFirstMatches(a,b))).length;
+  const surnameOnly=file.filter(a=>db.some(b=>authorLastMatches(a.last,b.last))).length;
+  const firstNameConflicts=Math.max(0,surnameOnly-matched);
+  const denom=Math.min(file.length,db.length);
+  const ratio=denom?matched/denom:0;
+  return {file:file.map(a=>a.last),db:db.map(a=>a.last),matched,firstNameConflicts,ratio,ok:matched>0 && firstNameConflicts===0 && (ratio>=0.5 || matched>=2)};
 }
 function entryFirstAuthorLast(e){
   const raw=e.fields.author||e.fields.editor||"";
@@ -1046,18 +1096,13 @@ function doiSuggestionConfidence(e,r,title){
   const sim=title&&r.title?titleSimilarity(title,r.title):{score:0, passes:()=>false};
   if(!sim.passes(0.75)) return {ok:false, reason:`title-only match is weak (${(sim.score*100|0)}%)`};
 
-  const efYear=(e.fields.year||e.fields.date||"").replace(/\D/g,"").slice(0,4);
-  const yearOk=!!(efYear && r.year && r.year===efYear);
-  const efAuthor=normAuthorLast(entryFirstAuthorLast(e));
-  const authorOk=!!(efAuthor && r.firstAuthor && authorLastMatches(efAuthor,normAuthorLast(r.firstAuthor)));
+  const authorList=authorListCompare(e,r);
+  const authorListOk=!!(authorList&&authorList.ok);
   const efJournal=(e.fields.journal||e.fields.journaltitle||e.fields.booktitle||"").replace(/[{}]/g,"").trim();
   const journalOk=!!(efJournal && r.journal && journalMatch(efJournal,r.journal));
-  const efPages=(e.fields.pages||"").replace(/[{}]/g,"").trim();
-  const pageConflict=!!(efPages && r.pages && pagesDiffer(efPages,r.pages));
 
-  if(pageConflict) return {ok:false, reason:"title-only match has different pages"};
-  if(yearOk || authorOk || journalOk) return {ok:true, reason:""};
-  return {ok:false, reason:"title-only match lacks year, author, or journal confirmation"};
+  if(authorListOk || journalOk) return {ok:true, reason:""};
+  return {ok:false, reason:"title-only match lacks author-list or journal confirmation"};
 }
 
 async function verifyEntry(e){
@@ -1131,6 +1176,11 @@ async function verifyEntry(e){
     }
     if(r.firstAuthor && efAuthor && !authorLastMatches(efAuthor,normAuthorLast(r.firstAuthor)))
       out.notes.push(`First author: file=${efAuthor} vs ${r.source}=${normAuthorLast(r.firstAuthor)}`);
+    const authorList=authorListCompare(e,r);
+    if(authorList && !authorList.ok)
+      out.notes.push(authorList.firstNameConflicts?
+        `Author list first-name conflict vs ${r.source}: ${authorList.firstNameConflicts} surname match${authorList.firstNameConflicts===1?"":"es"} with different first names`:
+        `Author list overlap low vs ${r.source}: ${authorList.matched}/${Math.min(authorList.file.length,authorList.db.length)} authors`);
     if(r.title && title){
       const sim=titleSimilarity(title,r.title);
       if(!sim.passes(V.titleSimThreshold)) out.notes.push(`Low title similarity vs ${r.source} (${(sim.score*100|0)}%${sim.reason?`, ${sim.reason}`:""}) — possible mismatch/fabrication`);
@@ -1170,6 +1220,7 @@ function doiPreviewRecord(r){
     title:r.title||"",
     year:r.year||"",
     firstAuthor:r.firstAuthor||"",
+    authors:r.authors||"",
     journal:r.journal||"",
     pages:r.pages||"",
     source:r.source||"",
@@ -1570,7 +1621,7 @@ function paintVerify(e){
   if(!slot||!e._verify)return;
   if(e._resolved){ slot.innerHTML=""; return; }
   const v=e._verify;
-  const cls=v.status==="found"?(v.notes.some(n=>/mismatch|differs|fabrication|Missing|Year:|author:|Journal\/venue:|Pages:|unreachable|timed out/i.test(n))?"w":"ok"):"e";
+  const cls=v.status==="found"?(v.notes.some(n=>/mismatch|differs|fabrication|Missing|Year:|author:|Author list|Journal\/venue:|Pages:|unreachable|timed out/i.test(n))?"w":"ok"):"e";
   const preview=v.doiPreview;
   const link=preview?` <a href="${escapeHtml(preview.url)}" target="_blank" rel="noopener">${escapeHtml(preview.doi)}</a>`:
     v.matchedUrl?` <a href="${escapeHtml(v.matchedUrl)}" target="_blank" rel="noopener">${escapeHtml(v.matchedDoi||"link")}</a>`:
@@ -1607,6 +1658,7 @@ function doiPreviewHtml(p){
   const meta=[
     ["Title",p.title],
     ["Year",p.year],
+    ["Authors",p.authors],
     ["First author",p.firstAuthor],
     ["Journal",p.journal],
     ["Pages",p.pages],
