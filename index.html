@@ -275,6 +275,7 @@ const DEFAULT_CONFIG = {
     dropFields: ["abstract", "rating", "read", "issn", "isbn", "langid", "language", "eprint", "elocation-id", "mesh", "annote",
       "pubstate", "eprinttype", "eprintclass", "primaryclass", "eprint", "shortjournal", "shorttitle", "pmid", "pst", "pmc", "copyright",
       "timestamp"],  // remove these fields from the working copy
+    dropUrlWhenDoi: true,      // remove url when doi is present
     titlecaseTitles: false     // Preserve title spelling by default; opt in to Title-Case
   },
   ordering: {
@@ -494,7 +495,7 @@ function lintAll(entries){
     }
     // month
     if(ch.monthAbbrev && e.fields.month){
-      const raw=e.fields.month.replace(/[{}"]/g,"").trim().toLowerCase();
+      const raw=e.fields.month.replace(/[{}"]/g,"").trim().toLowerCase().replace(/\.+$/,"");
       const n=/^\d+$/.test(raw) ? parseInt(raw,10) : NaN;
       const fixed=MONTHMAP[raw]||"";
       if(!(n>=1 && n<=12)){
@@ -537,10 +538,26 @@ function lintAll(entries){
       if(doiSeen[d]) add("warn",`Duplicate DOI "${d}" (also in ${doiSeen[d]})`);
       else doiSeen[d]=e.key;
     }
+    const vIssue=verificationIssue(e);
+    if(vIssue) add(vIssue.sev,vIssue.msg);
     e.errCount=e.issues.filter(x=>x.sev==="err").length;
     e.warnCount=e.issues.filter(x=>x.sev==="warn").length;
   }
   return entries;
+}
+function verificationIssue(e){
+  const v=e._verify;
+  if(!v || v.status==="unchecked") return null;
+  if(v.status==="error") return {sev:"err",msg:`Verification error: ${(v.notes&&v.notes[0])||"check failed"}`};
+  if(v.status==="notfound") return {sev:"err",msg:`Verification: ${(v.notes&&v.notes[0])||"no match found"}`};
+  const hasProblem=v.notes&&v.notes.some(n=>/mismatch|differs|fabrication|Missing|Year:|author:|Journal\/venue:|Pages:|unreachable|timed out/i.test(n));
+  const badUrl=v.urlStatus&&!v.urlStatus.ok;
+  if(v.status==="found" && (hasProblem||badUrl)){
+    const note=(v.notes&&v.notes.find(n=>/mismatch|differs|fabrication|Missing|Year:|author:|Journal\/venue:|Pages:/i.test(n))) ||
+      (badUrl?`URL ${v.urlStatus.reason}`:"verification warning");
+    return {sev:"warn",msg:`Verification: ${note}`};
+  }
+  return null;
 }
 function isProceedingsEventTitleAlias(e,f){
   return f==="eventtitle" && ["inproceedings","conference"].includes(e.type) && !e.fields.booktitle && !!e.fields.eventtitle;
@@ -660,22 +677,31 @@ function protectWordsInTitle(title){
 }
 function orderedFieldNames(e){
   const fo=CONFIG.formatting.fieldOrder;
-  const present=Object.keys(e.fields).filter(f=>!CONFIG.formatting.dropFields.includes(f));
+  const present=Object.keys(e.fields).filter(f=>!shouldDropField(e,f));
   const inOrder=fo.filter(f=>present.includes(f));
   const rest=present.filter(f=>!fo.includes(f)).sort();
   return [...inOrder,...rest];
 }
+function shouldDropField(e,f){
+  const name=f.toLowerCase();
+  if((CONFIG.formatting.dropFields||[]).some(x=>x.toLowerCase()===name)) return true;
+  return CONFIG.formatting.dropUrlWhenDoi && name==="url" && !!e.fields.doi;
+}
 function applyDropFields(entries){
   const drops=new Set(CONFIG.formatting.dropFields.map(f=>f.toLowerCase()));
-  if(!drops.size) return 0;
+  const dropUrlWhenDoi=!!CONFIG.formatting.dropUrlWhenDoi;
+  if(!drops.size && !dropUrlWhenDoi) return 0;
   let removed=0;
   for(const e of entries){
     let removedFromEntry=0;
     for(const f of Object.keys(e.fields)){
-      if(drops.has(f.toLowerCase())){ delete e.fields[f]; removed++; removedFromEntry++; }
+      const name=f.toLowerCase();
+      if(drops.has(name) || (dropUrlWhenDoi && name==="url" && !!e.fields.doi)){
+        delete e.fields[f]; removed++; removedFromEntry++;
+      }
     }
-    e.order=e.order.filter(f=>!drops.has(f.toLowerCase()));
-    if(removedFromEntry) e._dirty=true;
+    e.order=e.order.filter(f=>!shouldDropField(e,f));
+    if(removedFromEntry){ e._dirty=true; delete e._verify; }
   }
   return removed;
 }
@@ -940,6 +966,10 @@ function recordConfirms(e,r,doi,title){
   if(efJournal && r.journal && !journalMatch(efJournal,r.journal)) return false;
   return true;
 }
+function lowTitleSimilarity(r,title){
+  if(!title || !r.title) return false;
+  return jaccard(tok(title),tok(r.title)) < CONFIG.verification.titleSimThreshold;
+}
 
 async function verifyEntry(e){
   const out={status:"unchecked",notes:[],matches:[],fixes:[]};
@@ -950,10 +980,15 @@ async function verifyEntry(e){
   const title=e.fields.title?e.fields.title.replace(/[{}]/g,"").trim():"";
 
   const recs=[];
+  const lowTitleRejects=[];
   try{
     for(const name of enabled){
       const rec=await querySource(name,doi,title);
       if(!rec) continue;
+      if(lowTitleSimilarity(rec,title)){
+        lowTitleRejects.push(`${rec.source} (${(jaccard(tok(title),tok(rec.title))*100|0)}%)`);
+        continue;
+      }
       recs.push(rec);
       // Stop early once a source agrees on everything — no need to ask the rest.
       // (Without cross-check we already stop at the first hit; with cross-check we
@@ -964,6 +999,7 @@ async function verifyEntry(e){
 
   if(!recs.length){
     out.status="notfound";
+    if(lowTitleRejects.length) out.notes.push(`Rejected low-title-similarity match${lowTitleRejects.length>1?"es":""}: ${lowTitleRejects.join(", ")}.`);
     out.notes.push(`No match in ${enabled.map(n=>SOURCES[n].label).join(", ")}.`);
     await augmentVerify(e,out,title);
     return out;
@@ -1222,20 +1258,20 @@ function mutateEntry(e,act){
 function applyFix(e,act){
   if(!act) return;
   const oldKey=e.key.toLowerCase();
-  if(mutateEntry(e,act)) e._dirty=true;
+  if(mutateEntry(e,act)){ e._dirty=true; delete e._verify; }
   if(OPEN.has(oldKey)){ OPEN.delete(oldKey); OPEN.add(e.key.toLowerCase()); }
   lintAll(ENTRIES); render(); toast("Fixed");
 }
 function autoFixEntry(e){
   let n=0;
-  for(const is of e.issues) for(const a of (is.actions||[])) if(a.auto && mutateEntry(e,a)){ n++; e._dirty=true; }
+  for(const is of e.issues) for(const a of (is.actions||[])) if(a.auto && mutateEntry(e,a)){ n++; e._dirty=true; delete e._verify; }
   lintAll(ENTRIES); render(); toast(n?`Auto-fixed ${n} issue${n>1?"s":""}`:"Nothing to auto-fix");
 }
 function autoFixAll(){
   let n=0, ents=0;
   for(const e of ENTRIES){ let c=0;
     for(const is of e.issues) for(const a of (is.actions||[])) if(a.auto && mutateEntry(e,a)){ c++; }
-    if(c){ e._dirty=true; n+=c; ents++; }
+    if(c){ e._dirty=true; delete e._verify; n+=c; ents++; }
   }
   lintAll(ENTRIES); render();
   toast(n?`Auto-fixed ${n} issue${n>1?"s":""} across ${ents} entr${ents>1?"ies":"y"}`:"Nothing to auto-fix");
@@ -1333,8 +1369,8 @@ let VERIFYING=false;
 $("#btnVerify").onclick=async()=>{
   const btn=$("#btnVerify");
   if(VERIFYING){ VERIFYING=false; return; }   // second click = Stop
-  const list=filteredEntries();
-  if(!list.length){ toast("No visible entries to verify"); return; }
+  const list=filteredEntries().filter(e=>!e._verify || e._verify.status==="unchecked");
+  if(!list.length){ toast("No visible unchecked entries to verify"); return; }
   VERIFYING=true; btn.classList.add("running");
   let done=0;
   for(const e of list){
@@ -1347,21 +1383,21 @@ $("#btnVerify").onclick=async()=>{
   }
   const stopped=!VERIFYING && done<list.length;
   VERIFYING=false; btn.classList.remove("running"); btn.textContent="Verify visible…";
+  lintAll(ENTRIES); render();
   toast(stopped?`Stopped after ${done}`:"Verification complete");
 };
 /* verify a single entry on demand */
 async function verifyOne(e,btn){
   if(btn){ btn.disabled=true; btn.textContent="Verifying…"; }
   e._verify=await verifyEntry(e);
-  paintVerify(e);
+  lintAll(ENTRIES); render();
   if(btn){ btn.disabled=false; btn.textContent="⌕ Verify"; }
 }
 function paintVerify(e){
   const slot=document.querySelector(`.verify[data-key="${cssEsc(e.key)}"]`);
   if(!slot||!e._verify)return;
   const v=e._verify;
-  const cls=v.status==="found"?(v.notes.some(n=>/mismatch|differs|fabrication|Missing|Year:|author:|Journal\/venue:|Pages:|unreachable|timed out/i.test(n))?"w":"ok")
-            :v.status==="notfound"?"w":"e";
+  const cls=v.status==="found"?(v.notes.some(n=>/mismatch|differs|fabrication|Missing|Year:|author:|Journal\/venue:|Pages:|unreachable|timed out/i.test(n))?"w":"ok"):"e";
   const link=v.matchedUrl?` <a href="${escapeHtml(v.matchedUrl)}" target="_blank" rel="noopener">${escapeHtml(v.matchedDoi||"link")}</a>`
             :v.matchedDoi?` <span class="muted">[${escapeHtml(v.matchedDoi)}]</span>`:"";
   let rows=`<div class="issue ${cls}"><span class="ic">⌕</span>`+
@@ -1461,6 +1497,7 @@ function buildConfigUI(){
     <div class="row"><input type="checkbox" id="fm_lcf" ${C.formatting.lowercaseFieldNames?"checked":""}><label>Lowercase field names</label></div>
     <div class="row"><input type="checkbox" id="fm_tc" ${C.formatting.trailingComma?"checked":""}><label>Trailing comma</label></div>
     <div class="row"><input type="checkbox" id="fm_ttl" ${C.formatting.titlecaseTitles?"checked":""}><label>Title-Case titles (protected words keep their casing)</label></div>
+    <div class="row"><input type="checkbox" id="fm_drop_url_doi" ${C.formatting.dropUrlWhenDoi?"checked":""}><label>Drop <code class="k">url</code> when <code class="k">doi</code> exists</label></div>
     <div class="field" style="margin-top:12px"><label>Field order</label>
       <textarea id="fm_order" rows="2">${esc(C.formatting.fieldOrder.join(", "))}</textarea></div>
     <div class="field"><label>Drop these fields on import/export</label>
@@ -1537,6 +1574,7 @@ function readConfigUI(silent){
   C.formatting.lowercaseFieldNames=g("fm_lcf").checked;
   C.formatting.trailingComma=g("fm_tc").checked;
   C.formatting.titlecaseTitles=g("fm_ttl").checked;
+  C.formatting.dropUrlWhenDoi=g("fm_drop_url_doi").checked;
   C.formatting.fieldOrder=splitList(g("fm_order").value);
   C.formatting.dropFields=splitList(g("fm_drop").value);
   C.ordering.sortBy=g("or_by").value;
