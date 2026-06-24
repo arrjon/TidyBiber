@@ -8,7 +8,7 @@
 <meta name="author" content="Jonas Arruda">
 <meta name="theme-color" content="#2d4f4a">
 <link rel="canonical" href="https://arrjon.github.io/TidyBiber/">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='88'>%F0%9F%A6%AB</text></svg>">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext x='50' y='56' text-anchor='middle' dominant-baseline='central' font-size='82'%3E%F0%9F%A6%AB%3C/text%3E%3C/svg%3E">
 <!-- Open Graph -->
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="TidyBiber">
@@ -190,7 +190,7 @@
   <div class="entries" id="entries"></div>
 
   <footer class="sitefoot">
-    TidyBiber — created by Jonas Arruda · MIT License <span id="year">2026</span> ·
+    TidyBiber — created by Jonas Arruda · MIT License <span id="year">2026</span>
   </footer>
 </div>
 
@@ -576,7 +576,7 @@ function makeKey(e){
   const authors=translitKey(e.fields.author||e.fields.editor||"");
   const last=firstAuthorLast(authors);
   const lasts=authors.split(/\s+and\s+/i).map(firstAuthorLastFromName).join("");
-  const year=(e.fields.year||"").replace(/[^\d]/g,"").slice(0,4)||"0000";
+  const year=(e.fields.year||e.fields.date||"").replace(/[^\d]/g,"").slice(0,4)||"0000";
   const word=firstMeaningfulWord(translitKey(e.fields.title||""));
   let out;
   if(ks.mode==="default"){
@@ -1233,7 +1233,7 @@ $("#btnExport").onclick=()=>{
   const blob=new Blob([exportBib()],{type:"text/plain"});
   const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
   a.download="references.bib"; a.click(); URL.revokeObjectURL(a.href);
-  toast(`Exported ${ENTRIES.length} entries — ${mod} with your changes, rest verbatim`);
+  toast(`Exported ${ENTRIES.length} formatted entries — ${mod} with your edits`);
 };
 
 /* verify online — runs over the currently visible (filtered + searched) entries;
