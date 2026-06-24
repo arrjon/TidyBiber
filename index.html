@@ -242,7 +242,7 @@ const DEFAULT_CONFIG = {
   // Fields allowed but optional; anything else triggers an "unexpected field" warning.
   optionalFields: ["volume","number","pages","month","doi","url","editor",
     "publisher","series","address","edition","organization","school","institution","type","keywords",
-    "booktitle","journal"],
+    "booktitle","journal","location","articleno","numpages"],
   // Words that must keep exact casing — protected with {braces} in titles.
   protectedWords: ["Bayesian","Gaussian","Markov","Monte Carlo","Euler","Newton",
     "Fourier","Hilbert","Lipschitz","Gibbs","Poisson","Laplace","Hessian","Jacobian",
@@ -267,8 +267,8 @@ const DEFAULT_CONFIG = {
     lowercaseType: true,       // @Article -> @article
     lowercaseFieldNames: true, // Author= -> author=
     trailingComma: true,
-    dropFields: ["abstract", "rating", "read", "issn", "isbn", "langid", "language", "eprint", "elocation-id", "mesh",
-      "pubstate", "eprinttype", "eprintclass", "eprint", "shortjournal", "shorttitle", "pmid", "pst", "copyright"],  // remove these fields from the working copy
+    dropFields: ["abstract", "rating", "read", "issn", "isbn", "langid", "language", "eprint", "elocation-id", "mesh", "annote",
+      "pubstate", "eprinttype", "eprintclass", "eprint", "shortjournal", "shorttitle", "pmid", "pst", "pmc", "copyright"],  // remove these fields from the working copy
     titlecaseTitles: false     // Preserve title spelling by default; opt in to Title-Case
   },
   ordering: {
