@@ -176,6 +176,7 @@
   </div>
   <nav>
     <button id="btnConfig">Config</button>
+    <button id="btnReport" disabled>Export report</button>
     <button id="btnExport" class="primary" disabled>Export .bib</button>
   </nav>
 </div></header>
@@ -335,6 +336,7 @@ const MONTHMAP = { jan:"1", january:"1", feb:"2", february:"2", mar:"3", march:"
 let CONFIG = structuredClone(DEFAULT_CONFIG);  // session-only; persist via Export/Import JSON
 let ENTRIES = [];        // parsed entries with diagnostics
 let RAW_PREAMBLE = "";   // @string / @preamble / @comment kept verbatim
+let CURRENT_FILE_NAME = "";
 let CUR_FILTER = "all";
 let CUR_SEARCH = "";
 
@@ -563,15 +565,16 @@ function lintAll(entries){
   }
   return entries;
 }
+const VERIFY_PROBLEM_RE=/mismatch|differs|fabrication|Missing|Year:|author:|Author list|Journal\/venue:|Pages:|unreachable|timed out|Published version|Preprint/i;
 function verificationIssue(e){
   const v=e._verify;
   if(!v || v.status==="unchecked") return null;
   if(v.status==="error") return {sev:"err",msg:`Verification error: ${(v.notes&&v.notes[0])||"check failed"}`};
   if(v.status==="notfound") return {sev:"err",msg:`Verification: ${(v.notes&&v.notes[0])||"no match found"}`};
-  const hasProblem=v.notes&&v.notes.some(n=>/mismatch|differs|fabrication|Missing|Year:|author:|Author list|Journal\/venue:|Pages:|unreachable|timed out/i.test(n));
+  const hasProblem=v.notes&&v.notes.some(n=>VERIFY_PROBLEM_RE.test(n));
   const badUrl=v.urlStatus&&!v.urlStatus.ok;
   if(v.status==="found" && (hasProblem||badUrl)){
-    const note=(v.notes&&v.notes.find(n=>/mismatch|differs|fabrication|Missing|Year:|author:|Author list|Journal\/venue:|Pages:/i.test(n))) ||
+    const note=(v.notes&&v.notes.find(n=>VERIFY_PROBLEM_RE.test(n))) ||
       (badUrl?`URL ${v.urlStatus.reason}`:"verification warning");
     return {sev:"warn",msg:`Verification: ${note}`};
   }
@@ -789,6 +792,75 @@ function exportBib(){
   const body=sorted.map(e=>serializeEntry(e,false)).join("\n\n");
   return (RAW_PREAMBLE?RAW_PREAMBLE+"\n\n":"")+body+"\n";
 }
+function exportReport(){
+  const sorted=sortEntries(ENTRIES);
+  const checked=sorted.filter(e=>e._verify&&e._verify.status!=="unchecked").length;
+  const problemEntries=sorted.filter(reportEntryHasProblem);
+  const lines=[
+    "TidyBiber offline report",
+    `Generated: ${new Date().toLocaleString()}`,
+    CURRENT_FILE_NAME?`Source file: ${CURRENT_FILE_NAME}`:"",
+    "",
+    "Summary",
+    `- Entries: ${sorted.length}`,
+    `- Entries with open problems: ${problemEntries.length}`,
+    `- Verification checked: ${checked}`,
+    `- Verification unchecked: ${sorted.length-checked}`,
+    ""
+  ].filter((line,i,a)=>line!=="" || a[i-1]!=="");
+  if(!problemEntries.length){
+    lines.push("No open lint or verification problems are currently visible in TidyBiber.");
+    if(sorted.length-checked) lines.push("Some entries have not been verified online yet.");
+    return lines.join("\n")+"\n";
+  }
+  lines.push("Entries needing attention");
+  for(const e of problemEntries){
+    lines.push("", reportEntryHeader(e));
+    const issues=(e._resolved?[]:e.issues||[]);
+    if(issues.length){
+      lines.push("Open lint issues:");
+      for(const issue of issues){
+        lines.push(`- ${issue.sev==="err"?"Error":"Warning"}: ${plain(issue.msg)}`);
+        if(issue.fix) lines.push(`  Suggested value: ${plain(issue.fix)}`);
+        for(const action of issue.actions||[]) lines.push(`  Possible action: ${plain(action.label)}`);
+      }
+    }
+    appendVerificationReport(lines,e);
+    lines.push("Current formatted BibTeX:");
+    lines.push(indentBlock(serializeEntry(e,false).trim(),2));
+  }
+  return lines.join("\n")+"\n";
+}
+function reportEntryHasProblem(e){
+  if(!e._resolved && (e.issues||[]).length) return true;
+  const v=e._verify;
+  if(!v || v.status==="unchecked") return false;
+  if(v.status==="error" || v.status==="notfound") return true;
+  if(v.urlStatus&&!v.urlStatus.ok) return true;
+  return !!(v.notes||[]).some(n=>VERIFY_PROBLEM_RE.test(n));
+}
+function reportEntryHeader(e){
+  const title=(e.fields.title||"").replace(/[{}]/g,"").trim()||"(no title)";
+  const year=(e.fields.year||e.fields.date||"").replace(/[{}]/g,"").trim();
+  return `${e.key} (${e.type}${year?`, ${year}`:""}) - ${title}`;
+}
+function appendVerificationReport(lines,e){
+  const v=e._verify;
+  if(!v || v.status==="unchecked"){
+    lines.push("Verification: not checked in this session.");
+    return;
+  }
+  lines.push(`Verification: ${v.status}${v.source?` via ${v.source}`:""}`);
+  if(v.matchedTitle) lines.push(`- Matched title: ${plain(v.matchedTitle)}`);
+  if(v.matchedDoi) lines.push(`- Matched DOI: ${plain(normDoi(v.matchedDoi))}`);
+  if(v.matchedUrl) lines.push(`- Matched URL: ${plain(v.matchedUrl)}`);
+  for(const note of v.notes||[]) lines.push(`- Note: ${plain(note)}`);
+  if(v.urlStatus) lines.push(`- URL check: ${v.urlStatus.ok?"reachable":plain(v.urlStatus.reason)}${v.urlChecked?` (${plain(v.urlChecked)})`:""}`);
+  if(v.published) lines.push(`- Published version: ${plain(normDoi(v.published.doi))}${v.published.year?` (${plain(v.published.year)})`:""}`);
+  for(const fix of v.fixes||[]) lines.push(`- Possible action: ${plain(fix.label)} [${plain(fix.field)} = ${plain(fix.value)}]`);
+}
+function plain(s){return String(s||"").replace(/\s+/g," ").trim();}
+function indentBlock(s,n){const pad=" ".repeat(n);return String(s||"").split("\n").map(line=>pad+line).join("\n");}
 
 /* ---------- 7. ONLINE VERIFIER (multi-database) ------------ */
 /* Each source returns a normalized record, or null. All of these send
@@ -1313,7 +1385,7 @@ fileInput.onchange=e=>{const f=e.target.files[0]; if(f) readFile(f);};
 
 function readFile(f){
   const r=new FileReader();
-  r.onload=()=>{ loadText(r.result); toast(`Loaded ${f.name}`); };
+  r.onload=()=>{ CURRENT_FILE_NAME=f.name; loadText(r.result); toast(`Loaded ${f.name}`); };
   r.readAsText(f);
 }
 function loadText(text){
@@ -1339,6 +1411,7 @@ function render(){
     (mod?`<span class="chip" style="border-color:var(--accent);color:var(--accent)"><b>${mod}</b> modified</span>`:"");
   $("#toolbar").style.display="flex";
   $("#entries").style.display="block";
+  $("#btnReport").disabled=false;
   $("#btnExport").disabled=false;
   renderEntries();
 }
@@ -1619,6 +1692,14 @@ $("#btnAdd").onclick=()=>{
 };
 
 /* export */
+$("#btnReport").onclick=()=>{
+  lintAll(ENTRIES);
+  const blob=new Blob([exportReport()],{type:"text/plain"});
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
+  a.download="tidybiber-report.txt"; a.click(); URL.revokeObjectURL(a.href);
+  const problemCount=ENTRIES.filter(reportEntryHasProblem).length;
+  toast(`Exported report with ${problemCount} entr${problemCount===1?"y":"ies"} needing attention`);
+};
 $("#btnExport").onclick=()=>{
   const mod=ENTRIES.filter(isChanged).length;
   const blob=new Blob([exportBib()],{type:"text/plain"});
@@ -1662,7 +1743,7 @@ function paintVerify(e){
   if(!slot||!e._verify)return;
   if(e._resolved){ slot.innerHTML=""; return; }
   const v=e._verify;
-  const cls=v.status==="found"?(v.notes.some(n=>/mismatch|differs|fabrication|Missing|Year:|author:|Author list|Journal\/venue:|Pages:|unreachable|timed out/i.test(n))?"w":"ok"):"e";
+  const cls=v.status==="found"?(v.notes.some(n=>VERIFY_PROBLEM_RE.test(n))?"w":"ok"):"e";
   const preview=v.doiPreview;
   const link=preview?` ${doiAnchor(preview.url,preview.doi)}`:
     (v.matchedUrl&&v.matchedDoi)?` ${doiAnchor(v.matchedUrl,v.matchedDoi)}`:
