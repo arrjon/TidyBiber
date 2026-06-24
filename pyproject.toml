@@ -1,0 +1,12 @@
+[project]
+name = "tidybiber"
+version = "0.1.0"
+description = "Lint, format, and verify your BibTeX — right in the browser. A single self-contained HTML file."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Jonas Arruda" }]
+dependencies = []
+
+[project.urls]
+Homepage = "https://arrjon.github.io/TidyBiber/"
+Repository = "https://github.com/arrjon/TidyBiber"

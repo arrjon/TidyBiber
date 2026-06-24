@@ -1,0 +1,18 @@
+# Personal bibliography — keep private libraries out of the public repo
+references.bib
+*.local.bib
+
+# Build output for GitHub Pages
+_site/
+
+# Python / tooling
+.venv/
+__pycache__/
+*.pyc
+uv.lock
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
+.claude

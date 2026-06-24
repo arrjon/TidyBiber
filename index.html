@@ -1,0 +1,1474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TidyBiber — tidy your BibTeX</title>
+<meta name="description" content="Lint, format, and verify your BibTeX — right in the browser. A single self-contained HTML file; your library never leaves your machine.">
+<meta name="author" content="Jonas Arruda">
+<meta name="theme-color" content="#2d4f4a">
+<link rel="canonical" href="https://arrjon.github.io/TidyBiber/">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='88'>%F0%9F%A6%AB</text></svg>">
+<!-- Open Graph -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="TidyBiber">
+<meta property="og:title" content="TidyBiber — tidy your BibTeX">
+<meta property="og:description" content="Lint, format, and verify your BibTeX — right in the browser. Your library never leaves your machine.">
+<meta property="og:url" content="https://arrjon.github.io/TidyBiber/">
+<!-- Twitter -->
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="TidyBiber — tidy your BibTeX">
+<meta name="twitter:description" content="Lint, format, and verify your BibTeX — right in the browser. Your library never leaves your machine.">
+<style>
+  :root{
+    --bg:#fbfbf9; --ink:#16161a; --mute:#6b6b73; --line:#e3e3dd;
+    --panel:#ffffff; --accent:#2d4f4a; --accent-soft:#e8efed;
+    --warn:#8a5a00; --warn-bg:#fdf4e3; --err:#8a2a2a; --err-bg:#fbecec;
+    --ok:#2f6b3a; --ok-bg:#ecf4ee; --mono:'SF Mono',ui-monospace,'Cascadia Code',Menlo,Consolas,monospace;
+    --sans:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{-webkit-text-size-adjust:100%}
+  body{font-family:var(--sans);background:var(--bg);color:var(--ink);line-height:1.5;font-size:15px}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 24px}
+
+  header{border-bottom:1px solid var(--line);padding:22px 0 18px}
+  .brand{display:flex;align-items:baseline;gap:14px}
+  .brand h1{font-size:20px;font-weight:650;letter-spacing:-.02em}
+  .brand .logo{font-size:20px;line-height:1}
+  .brand .tag{color:var(--mute);font-size:13px;font-family:var(--mono)}
+  nav{margin-left:auto;display:flex;gap:6px}
+  .brand{position:relative}
+  header .wrap{display:flex;align-items:center;gap:16px}
+  button{font-family:var(--sans);font-size:13.5px;cursor:pointer;border:1px solid var(--line);
+    background:var(--panel);color:var(--ink);padding:7px 13px;border-radius:7px;transition:.12s}
+  button:hover{border-color:#c7c7bf;background:#fff}
+  button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  button.primary:hover{background:#244039}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  button:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+  /* dropzone */
+  .drop{margin:28px 0;border:1.5px dashed #cfcfc6;border-radius:14px;background:var(--panel);
+    padding:46px 24px;text-align:center;transition:.15s}
+  .drop.hot{border-color:var(--accent);background:var(--accent-soft)}
+  .drop h2{font-size:17px;font-weight:600;margin-bottom:6px}
+  .drop p{color:var(--mute);font-size:13.5px}
+  .drop .or{margin-top:14px}
+
+  /* summary bar */
+  .summary{display:none;gap:10px;flex-wrap:wrap;margin:22px 0 8px}
+  .chip{font-family:var(--mono);font-size:12.5px;padding:6px 11px;border-radius:20px;border:1px solid var(--line);background:#fff}
+  .chip b{font-weight:650}
+  .chip.err{background:var(--err-bg);border-color:#f0cdcd;color:var(--err)}
+  .chip.warn{background:var(--warn-bg);border-color:#f0e0bd;color:var(--warn)}
+  .chip.ok{background:var(--ok-bg);border-color:#cfe5d4;color:var(--ok)}
+
+  .toolbar{display:none;gap:8px;flex-wrap:wrap;margin:14px 0 6px;align-items:center}
+  .toolbar .spacer{flex:1}
+  .filterbtn{padding:5px 11px;font-size:12.5px}
+  .filterbtn.active{background:var(--ink);color:#fff;border-color:var(--ink)}
+  #search{width:auto;flex:0 1 280px;font-family:var(--sans);font-size:13px;padding:6px 11px}
+  #btnVerify.running{background:var(--err-bg);border-color:#f0cdcd;color:var(--err)}
+
+  /* entries */
+  .entries{display:none;margin:8px 0 60px}
+  .entry{border:1px solid var(--line);border-radius:11px;background:var(--panel);margin-bottom:12px;overflow:hidden}
+  .entry summary{list-style:none;cursor:pointer;padding:13px 16px;display:flex;gap:12px;align-items:center}
+  .entry summary::-webkit-details-marker{display:none}
+  .etype{font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.06em;
+    color:var(--accent);background:var(--accent-soft);padding:3px 8px;border-radius:5px;flex-shrink:0}
+  .ekey{font-family:var(--mono);font-size:13px;font-weight:600;flex-shrink:0}
+  .etitle{color:var(--mute);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+  .badges{display:flex;gap:5px;flex-shrink:0}
+  .badge{font-size:11px;font-family:var(--mono);width:22px;height:20px;display:flex;align-items:center;
+    justify-content:center;border-radius:5px;font-weight:600}
+  .badge.e{background:var(--err-bg);color:var(--err)}
+  .badge.w{background:var(--warn-bg);color:var(--warn)}
+  .badge.ok{background:var(--ok-bg);color:var(--ok)}
+  .badge.mod{background:var(--accent-soft);color:var(--accent)}
+  .ebody{border-top:1px solid var(--line);padding:14px 16px;background:#fcfcfb}
+  .issues{margin-bottom:12px;display:flex;flex-direction:column;gap:6px}
+  .issue{font-size:13px;padding:7px 10px;border-radius:7px;display:flex;gap:8px;align-items:flex-start}
+  .issue.e{background:var(--err-bg);color:var(--err)}
+  .issue.w{background:var(--warn-bg);color:var(--warn)}
+  .issue .ic{font-family:var(--mono);font-weight:700;flex-shrink:0}
+  .issue .fix{margin-left:auto;font-family:var(--mono);font-size:11.5px;opacity:.8;flex-shrink:0}
+  .fixwrap{margin-left:auto;display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end}
+  .fixbtn{font-size:11.5px;padding:3px 9px;border-radius:6px;background:#fff;line-height:1.3}
+  .fixbtn.auto{border-color:var(--accent);color:var(--accent)}
+  .fixbtn.auto:hover{background:var(--accent-soft)}
+  pre.code{font-family:var(--mono);font-size:12.5px;background:#f5f5f1;border:1px solid var(--line);
+    border-radius:8px;padding:11px 13px;overflow-x:auto;line-height:1.55;white-space:pre}
+  .ebar{display:flex;gap:8px;align-items:center;margin-bottom:12px}
+  .ebar .spacer{flex:1}
+  .ebar button{padding:5px 11px;font-size:12.5px}
+  button.danger{color:var(--err);border-color:#f0cdcd}
+  button.danger:hover{background:var(--err-bg);border-color:#e0a8a8}
+  .entry-edit textarea{min-height:200px;line-height:1.55}
+  .twocol{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .twocol>div{min-width:0}   /* keep both columns equal; let long lines scroll inside */
+  .twocol .lab{font-size:11px;font-family:var(--mono);text-transform:uppercase;letter-spacing:.05em;color:var(--mute);margin-bottom:5px}
+  @media(max-width:720px){.twocol{grid-template-columns:1fr}}
+
+  /* modal */
+  .modal{display:none;position:fixed;inset:0;background:rgba(20,20,26,.42);z-index:50;
+    align-items:flex-start;justify-content:center;padding:40px 16px;overflow-y:auto}
+  .modal.open{display:flex}
+  .sheet{background:var(--panel);border-radius:14px;max-width:760px;width:100%;border:1px solid var(--line);
+    box-shadow:0 24px 60px rgba(0,0,0,.18)}
+  .sheet header{padding:18px 22px;display:flex;align-items:center;border:none;border-bottom:1px solid var(--line)}
+  .sheet header h3{font-size:16px;font-weight:650}
+  .sheet header .wrap{padding:0;display:contents}
+  .sheet .body{padding:20px 22px;max-height:64vh;overflow-y:auto}
+  .sheet .foot{padding:14px 22px;border-top:1px solid var(--line);display:flex;gap:8px;align-items:center}
+  .field{margin-bottom:18px}
+  .field>label{display:block;font-weight:600;font-size:13.5px;margin-bottom:4px}
+  .field .hint{color:var(--mute);font-size:12.5px;margin-bottom:8px}
+  textarea,input[type=text],select{font-family:var(--mono);font-size:12.5px;width:100%;
+    border:1px solid var(--line);border-radius:8px;padding:9px 11px;background:#fcfcfb;color:var(--ink);resize:vertical}
+  textarea:focus,input:focus,select:focus{outline:none;border-color:var(--accent)}
+  .row{display:flex;gap:10px;align-items:center;margin-bottom:7px}
+  .row label{font-size:13px}
+  .seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;width:fit-content}
+  .seg button{border:none;border-radius:0;border-right:1px solid var(--line)}
+  .seg button:last-child{border-right:none}
+  .seg button.on{background:var(--accent);color:#fff}
+  .autosave{font-size:12px;font-family:var(--mono);color:var(--mute);margin-left:4px;transition:.2s}
+  .autosave.hot{color:var(--ok)}
+  .close{margin-left:auto;background:none;border:none;font-size:20px;color:var(--mute);padding:0 4px}
+  details.cfg{border:1px solid var(--line);border-radius:9px;margin-bottom:10px}
+  details.cfg summary{cursor:pointer;padding:10px 13px;font-weight:600;font-size:13.5px;list-style:none}
+  details.cfg summary::-webkit-details-marker{display:none}
+  details.cfg .inner{padding:0 13px 13px}
+  .muted{color:var(--mute);font-size:12.5px}
+  code.k{font-family:var(--mono);background:#f0f0ea;padding:1px 5px;border-radius:4px;font-size:12px}
+  .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;
+    padding:10px 18px;border-radius:9px;font-size:13px;z-index:80;opacity:0;transition:.2s;pointer-events:none}
+  .toast.show{opacity:1}
+  a{color:var(--accent)}
+  .sitefoot{border-top:1px solid var(--line);margin-top:40px;padding:18px 0 36px;
+    color:var(--mute);font-size:12.5px;text-align:center;line-height:1.7}
+</style>
+</head>
+<body>
+<header><div class="wrap">
+  <div class="brand">
+    <span class="logo">🦫</span>
+    <h1>Tidy<span class="hl">BIB</span>er</h1>
+    <span class="tag">tidy your .bib</span>
+  </div>
+  <nav>
+    <button id="btnConfig">Config</button>
+    <button id="btnExport" class="primary" disabled>Export .bib</button>
+  </nav>
+</div></header>
+
+<div class="wrap">
+  <div class="drop" id="drop">
+    <h2>Drop a .bib file</h2>
+    <p>It's parsed, linted against your config, and ordered — all in the browser. Nothing is uploaded.</p>
+    <div class="or"><button id="btnPick">Choose file</button>
+      <input type="file" id="file" accept=".bib,.bibtex,text/plain" hidden></div>
+  </div>
+
+  <div class="summary" id="summary"></div>
+
+  <div class="toolbar" id="toolbar">
+    <input type="text" id="search" placeholder="Search key, title, author…" autocomplete="off">
+    <button class="filterbtn active" data-f="all">All</button>
+    <button class="filterbtn" data-f="err">Errors</button>
+    <button class="filterbtn" data-f="warn">Warnings</button>
+    <button class="filterbtn" data-f="clean">Clean</button>
+    <button class="filterbtn" data-f="mod">Modified</button>
+    <span class="spacer"></span>
+    <button id="btnAutofix">⚡ Auto-fix all</button>
+    <button id="btnAdd">+ Add entry</button>
+    <button id="btnVerify">Verify visible…</button>
+  </div>
+
+  <div class="entries" id="entries"></div>
+
+  <footer class="sitefoot">
+    TidyBiber — created by Jonas Arruda · MIT License <span id="year">2026</span> ·
+  </footer>
+</div>
+
+<!-- CONFIG MODAL -->
+<div class="modal" id="cfgModal">
+  <div class="sheet">
+    <header><div class="wrap" style="display:flex;align-items:center;width:100%">
+      <h3>Configuration</h3>
+      <button class="close" id="cfgClose">×</button>
+    </div></header>
+    <div class="body" id="cfgBody"><!-- built by JS --></div>
+    <div class="foot">
+      <button class="primary" id="cfgSave">Re-lint</button>
+      <button id="cfgReset">Reset to defaults</button>
+      <span class="spacer" style="flex:1"></span>
+      <button id="cfgExportJson">Export JSON</button>
+      <button id="cfgImportJson">Import JSON</button>
+      <input type="file" id="cfgFile" accept=".json,application/json" hidden>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ============================================================
+   TidyBiber — all logic. No dependencies, no network except
+   the optional verifier (Crossref / OpenAlex, both CORS-enabled).
+   ============================================================ */
+
+/* ---------- 1. DEFAULT CONFIG ------------------------------ */
+const DEFAULT_CONFIG = {
+  // Bump when the bundled field schema below changes, so older saved configs
+  // pick up the new requiredFields / optionalFields / fieldOrder on next load.
+  schemaVersion: 2,
+  // Required fields per entry type. "OR" groups: use "a|b" meaning at least one.
+  // Tuned to this library's biblatex style: `year` OR `date`, `journal` OR `journaltitle`.
+  requiredFields: {
+    article:       ["author","title","journal|journaltitle","year|date"],
+    book:          ["author|editor","title","publisher","year|date"],
+    inproceedings: ["author","title","booktitle","year|date"],
+    conference:    ["author","title","booktitle","year|date"],
+    incollection:  ["author","title","booktitle","publisher","year|date"],
+  },
+  // Fields allowed but optional; anything else triggers an "unexpected field" warning.
+  optionalFields: ["volume","number","pages","month","doi","url","editor",
+    "publisher","series","address","edition","abstract","keywords",
+    "booktitle","journal"],
+  // Words that must keep exact casing — protected with {braces} in titles.
+  protectedWords: ["Bayesian","Gaussian","Markov","Monte Carlo","Euler","Newton",
+    "Fourier","Hilbert","Lipschitz","Gibbs","Poisson","Laplace","Hessian","Jacobian",
+    "Riemann","Lagrangian","Hamiltonian","COVID-19","DNA","RNA","mRNA","CRISPR",
+    "AI","ML","GPU","CPU","GPT","CNN","RNN","LSTM"],
+  // Citation key style: default = LastnameYEARword ; templated otherwise.
+  keyStyle: {
+    mode: "default",            // "default" | "template" | "off"
+    template: "{authorlast}{year}{word}",  // tokens: {authorlast}{authorlasts}{year}{word}{type}
+    case: "lower",             // key case: "lower" | "title" | "upper" | "asis"
+    separator: "",             // between tokens, e.g. Author_2021_word
+    stripStopwords: true       // drop the/a/an/on/of/for… for {word}
+  },
+  formatting: {
+    indent: 2,                 // spaces inside an entry
+    fieldOrder: ["author","editor","title","booktitle","journal","journaltitle",
+      "year","date","month","volume","number","issue","pages","publisher","series",
+      "address","location","edition","chapter","doi",
+      "url","keywords"],
+                               // canonical field order; unlisted appended alphabetically
+    alignEquals: true,         // line up = signs
+    quoteStyle: "braces",      // "braces" -> field = {..}  |  "quotes" -> field = ".."
+    lowercaseType: true,       // @Article -> @article
+    lowercaseFieldNames: true, // Author= -> author=
+    trailingComma: true,
+    dropFields: [],            // remove these fields on export
+    titlecaseTitles: true      // Title-Case the title field (protected words keep their casing)
+  },
+  ordering: {
+    sortBy: "key",             // "key" | "year" | "author" | "type" | "none"
+    direction: "asc"           // "asc" | "desc"
+  },
+  checks: {
+    requirePageRangeDash: true,   // 12-34 should be 12--34
+    fourDigitYear: true,
+    doiFormat: true,              // doi must not be a full URL
+    detectDuplicateKeys: true,
+    detectDuplicateDOIs: true,
+    warnUnknownFields: true,
+    monthAbbrev: true             // month should be jan,feb,…
+  },
+  verification: {
+    // Enabled sources, tried in this order. All are CORS-enabled and free.
+    //   crossref | openalex | semanticscholar | datacite | dblp
+    sources: ["crossref","openalex","semanticscholar","datacite"],
+    mailto: "",                   // optional: your email for Crossref/OpenAlex "polite pool" (faster, nicer). Blank = anonymous access.
+    titleSimThreshold: 0.5,       // below this Jaccard similarity → flag possible mismatch
+    crossCheck: false,             // when on, query every enabled source and compare findings
+    delayMs: 120,                 // pause between entries to stay polite to the APIs
+    checkUrls: true,              // ping the url field to detect dead links
+    urlTimeoutMs: 8000,           // give up on a url after this long
+    findPublished: true           // for arXiv/preprints, look for a published (peer-reviewed) version
+  }
+};
+
+const STOPWORDS = new Set(("a an and are as at be by for from has he in is it its of on or "+
+  "that the to was were will with we our this these those an via using toward towards "+
+  "into over under about between among").split(" "));
+const MONTHS = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
+// Common misspelled field names → their correct name (for one-click autocorrect).
+const FIELD_TYPOS = { dio:"doi", doy:"doi", tolume:"volume", vol:"volume", months:"month",
+  jounal:"journal", jornal:"journal", titel:"title", autor:"author", auther:"author",
+  adress:"address", yr:"year", pp:"pages", page:"pages", keyword:"keywords", url1:"url",
+  editors:"editor", publishers:"publisher", abstrac:"abstract" };
+const MONTHMAP = { january:"jan", february:"feb", march:"mar", april:"apr", may:"may",
+  june:"jun", july:"jul", august:"aug", september:"sep", sept:"sep", october:"oct",
+  november:"nov", december:"dec" };
+
+let CONFIG = structuredClone(DEFAULT_CONFIG);  // session-only; persist via Export/Import JSON
+let ENTRIES = [];        // parsed entries with diagnostics
+let RAW_PREAMBLE = "";   // @string / @preamble / @comment kept verbatim
+let CUR_FILTER = "all";
+let CUR_SEARCH = "";
+
+/* ---------- 2. CONFIG ------------------------------------- */
+/* The config lives only for the session. To keep it, use Export JSON; to reuse
+   it, Import JSON. "Re-lint" applies the current settings to the loaded file. */
+// merge a saved/imported object onto defaults, applying the schema migration
+function migrateConfig(saved){
+  const cfg = mergeDeep(structuredClone(DEFAULT_CONFIG), saved||{});
+  if((saved&&saved.schemaVersion||0) < DEFAULT_CONFIG.schemaVersion){
+    cfg.requiredFields = structuredClone(DEFAULT_CONFIG.requiredFields);
+    cfg.optionalFields = structuredClone(DEFAULT_CONFIG.optionalFields);
+    cfg.formatting.fieldOrder = structuredClone(DEFAULT_CONFIG.formatting.fieldOrder);
+    cfg.schemaVersion = DEFAULT_CONFIG.schemaVersion;
+  }
+  return cfg;
+}
+function mergeDeep(t,s){
+  for(const k in s){
+    if(s[k]&&typeof s[k]==="object"&&!Array.isArray(s[k])) t[k]=mergeDeep(t[k]||{},s[k]);
+    else t[k]=s[k];
+  }
+  return t;
+}
+
+/* ---------- 3. BIBTEX PARSER ------------------------------- */
+/* Hand-written tokenizer: handles nested braces, quoted values,
+   @string/@preamble/@comment, and concatenation is preserved as-is. */
+function parseBib(text){
+  const entries=[]; const preambleParts=[];
+  let i=0; const n=text.length;
+  function skipWs(){ while(i<n && /\s/.test(text[i])) i++; }
+  while(i<n){
+    skipWs();
+    if(i>=n) break;
+    if(text[i]!=="@"){ i++; continue; }
+    const at=i; i++; // past @
+    let type="";
+    while(i<n && /[A-Za-z]/.test(text[i])) type+=text[i++];
+    type=type.toLowerCase();
+    skipWs();
+    const opener=text[i];
+    if(opener!=="{" && opener!=="("){ continue; }
+    const closer = opener==="{" ? "}" : ")";
+    i++; // past opener
+    if(type==="comment"||type==="string"||type==="preamble"){
+      // capture whole block verbatim
+      let depth=1, buf="";
+      while(i<n && depth>0){
+        if(text[i]==="{")depth++; else if(text[i]==="}")depth--;
+        if(depth>0)buf+=text[i];
+        i++;
+      }
+      preambleParts.push(text.slice(at,i));
+      continue;
+    }
+    // normal entry: key , field=value ...
+    skipWs();
+    let key="";
+    while(i<n && text[i]!=="," && !/\s/.test(text[i]) && text[i]!==closer) key+=text[i++];
+    const fields=[]; const order=[];
+    skipWs();
+    while(i<n && text[i]!==closer){
+      if(text[i]===","){ i++; skipWs(); continue; }
+      let fname="";
+      while(i<n && /[^=\s,}]/.test(text[i])) fname+=text[i++];
+      skipWs();
+      if(text[i]!=="="){ // malformed; bail this field
+        while(i<n && text[i]!=="," && text[i]!==closer) i++;
+        continue;
+      }
+      i++; skipWs(); // past =
+      let val="", rawval="";
+      if(text[i]==="{"){
+        let depth=0;
+        do{
+          if(text[i]==="{")depth++; else if(text[i]==="}")depth--;
+          rawval+=text[i]; if(!(depth===0)) {} i++;
+        }while(i<n && depth>0);
+        val=rawval.slice(1,-1);
+      }else if(text[i]==='"'){
+        i++; let depth=0;
+        while(i<n){
+          if(text[i]==="{")depth++; else if(text[i]==="}")depth--;
+          else if(text[i]==='"'&&depth===0){ i++; break; }
+          val+=text[i]; rawval+=text[i]; i++;
+        }
+      }else{ // bareword / number / concat — read to comma or close
+        while(i<n && text[i]!=="," && text[i]!==closer){ val+=text[i]; rawval+=text[i]; i++; }
+        val=val.trim();
+      }
+      const fn=fname.trim().toLowerCase();
+      if(fn){ fields.push({name:fn, value:val.trim()}); order.push(fn); }
+      skipWs();
+    }
+    if(text[i]===closer) i++;
+    const fmap={}; for(const f of fields) if(!(f.name in fmap)) fmap[f.name]=f.value;
+    const raw=text.slice(at,i);
+    // _orig = pristine source, never mutated (shown in "As parsed").
+    // _src  = current working source, updated by edits/autofixes (shown in the editor).
+    entries.push({type, key:key.trim(), fields:fmap, order, _src:raw, _orig:raw});
+  }
+  return {entries, preamble:preambleParts.join("\n\n")};
+}
+
+/* ---------- 4. LINTER -------------------------------------- */
+function lintAll(entries){
+  const keySeen={}, doiSeen={}, genSeen={};
+  for(const e of entries){
+    e.issues=[];
+    const C=CONFIG, ch=C.checks;
+    // actions: array of {label, kind, field?, value?, to?, auto?} for one-click autocorrect
+    const add=(sev,msg,fix,actions)=>e.issues.push({sev,msg,fix:fix||"",actions:actions||[]});
+
+    // entry type known?
+    if(!C.requiredFields[e.type] && e.type!=="misc"){
+      add("warn",`Unknown entry type @${e.type}`);
+    }
+    // required fields
+    const req=C.requiredFields[e.type]||C.requiredFields.misc||[];
+    for(const r of req){
+      const alts=r.split("|");
+      if(!alts.some(a=>e.fields[a]&&e.fields[a].length)){
+        add("err",`Missing required field: ${alts.join(" or ")}`);
+      }
+    }
+    // unknown fields
+    if(ch.warnUnknownFields){
+      const CORE=["author","editor","title","year"]; // always valid
+      const known=new Set([...CORE,...(req.flatMap(r=>r.split("|"))),...C.optionalFields]);
+      for(const f in e.fields) if(!known.has(f)){
+        const to=FIELD_TYPOS[f];
+        const acts = to
+          ? [{label:`Rename → ${to}`,kind:"renameField",field:f,to,auto:true}]
+          : [{label:"Remove field",kind:"removeField",field:f},
+             {label:"Allow this field",kind:"allowField",field:f}];
+        add("warn",`Unexpected field: ${f}`,"",acts);
+      }
+    }
+    // year
+    if(ch.fourDigitYear && e.fields.year && !/^\d{4}$/.test(e.fields.year.replace(/[{}]/g,"").trim())){
+      const y=(e.fields.year.match(/\d{4}/)||[])[0];
+      add("warn",`Year is not a 4-digit number: "${e.fields.year}"`, y||"",
+        y?[{label:`Fix → ${y}`,kind:"setField",field:"year",value:y,auto:true}]:[]);
+    }
+    // pages
+    if(ch.requirePageRangeDash && e.fields.pages){
+      const p=e.fields.pages.trim();
+      if(/^\d+\s*-\s*\d+$/.test(p) && !p.includes("--")){
+        const fixed=p.replace(/^(\d+)\s*-\s*(\d+)$/,"$1--$2");
+        add("warn","Page range uses single dash; should be 12--34",fixed,
+          [{label:`Fix → ${fixed}`,kind:"setField",field:"pages",value:fixed,auto:true}]);
+      }
+    }
+    // doi
+    if(ch.doiFormat && e.fields.doi){
+      if(/^https?:\/\//i.test(e.fields.doi.trim()) || /doi\.org/i.test(e.fields.doi)){
+        const bare=normDoi(e.fields.doi);
+        add("warn","DOI should be bare (10.xxxx/...) not a URL",bare,
+          [{label:"Fix → bare DOI",kind:"setField",field:"doi",value:bare,auto:true}]);
+      }
+    }
+    // month
+    if(ch.monthAbbrev && e.fields.month){
+      const raw=e.fields.month.replace(/[{}"]/g,"").trim().toLowerCase();
+      if(!MONTHS.includes(raw.slice(0,3)) && !/^\d{1,2}$/.test(raw)){
+        const ab=MONTHMAP[raw];
+        add("warn",`Month not a standard abbreviation: "${e.fields.month}"`, ab||"",
+          ab?[{label:`Fix → ${ab}`,kind:"setField",field:"month",value:ab,auto:true}]:[]);
+      }
+    }
+    // protected words not braced in title
+    if(e.fields.title){
+      for(const w of CONFIG.protectedWords){
+        const re=new RegExp(`(^|[^{\\w])(${escapeRe(w)})([^}\\w]|$)`,"g");
+        if(re.test(e.fields.title))
+          add("warn",`"${w}" in title is not brace-protected (casing may be lost)`,"{"+w+"}",
+            [{label:"Brace it",kind:"setField",field:"title",value:protectWordsInTitle(e.fields.title),auto:true}]);
+      }
+    }
+    // citation key style
+    if(CONFIG.keyStyle.mode!=="off"){
+      const want=makeKey(e);
+      if(want && want.toLowerCase()!==e.key.toLowerCase())
+        add("warn",`Key "${e.key}" ≠ expected style "${want}"`,want,
+          [{label:`Rename key → ${want}`,kind:"setKey",value:want,auto:false}]);
+    }
+    // duplicates — check both the existing key and the key the formatter will generate,
+    // since two distinct source keys can collapse to the same generated key on export.
+    if(ch.detectDuplicateKeys){
+      const lk=e.key.toLowerCase();
+      if(keySeen[lk]) add("err",`Duplicate citation key "${e.key}"`);
+      keySeen[lk]=true;
+      if(CONFIG.keyStyle.mode!=="off"){
+        const gk=makeKey(e).toLowerCase();
+        if(gk!==lk){
+          if(genSeen[gk]) add("err",`Generated key "${makeKey(e)}" collides with ${genSeen[gk]} after reformatting`);
+          else genSeen[gk]=e.key;
+        }
+      }
+    }
+    if(ch.detectDuplicateDOIs && e.fields.doi){
+      const d=normDoi(e.fields.doi);
+      if(doiSeen[d]) add("warn",`Duplicate DOI "${d}" (also in ${doiSeen[d]})`);
+      else doiSeen[d]=e.key;
+    }
+    e.errCount=e.issues.filter(x=>x.sev==="err").length;
+    e.warnCount=e.issues.filter(x=>x.sev==="warn").length;
+  }
+  return entries;
+}
+function escapeRe(s){return s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");}
+function normDoi(d){return d.replace(/^https?:\/\/(dx\.)?doi\.org\//i,"").replace(/[{}]/g,"").trim().toLowerCase();}
+
+/* ---------- 5. CITATION KEY GENERATOR ---------------------- */
+function firstAuthorLast(authorStr){
+  if(!authorStr) return "anon";
+  let a=authorStr.split(/\s+and\s+/i)[0].trim().replace(/[{}]/g,"");
+  if(a.includes(",")) return a.split(",")[0].trim().split(/\s+/).pop();
+  const parts=a.split(/\s+/); return parts[parts.length-1];
+}
+function firstMeaningfulWord(title){
+  if(!title) return "";
+  const words=title.replace(/[{}]/g,"").replace(/[^A-Za-z0-9\s-]/g," ").split(/\s+/).filter(Boolean);
+  for(const w of words){
+    if(CONFIG.keyStyle.stripStopwords && STOPWORDS.has(w.toLowerCase())) continue;
+    return w;
+  }
+  return words[0]||"";
+}
+function applyCase(s,mode){
+  if(mode==="lower")return s.toLowerCase();
+  if(mode==="upper")return s.toUpperCase();
+  if(mode==="title")return s.charAt(0).toUpperCase()+s.slice(1).toLowerCase();
+  return s;
+}
+/* Transliterate accented / LaTeX-escaped letters to plain ASCII for citation keys.
+   German convention: ü→ue, ö→oe, ä→ae, ß→ss; ø→oe, å→aa, æ→ae, œ→oe;
+   any other diacritic is stripped (é→e, ñ→n, ç→c). LaTeX macros (\"u, \o, \'e,
+   \c{c}, …) are resolved first. Used for key generation only. */
+function deLatex(s){
+  return s
+    .replace(/\\"\s*\{?([aouAOU])\}?/g,(m,c)=>({a:"ae",o:"oe",u:"ue",A:"Ae",O:"Oe",U:"Ue"}[c])) // umlaut macros
+    // control-word macros — also swallow the single space that terminates them in TeX
+    .replace(/\{?\\ss\}? ?/g,"ss")
+    .replace(/\\AE\b ?/g,"Ae").replace(/\\ae\b ?/g,"ae").replace(/\\OE\b ?/g,"Oe").replace(/\\oe\b ?/g,"oe")
+    .replace(/\\AA\b ?/g,"Aa").replace(/\\aa\b ?/g,"aa").replace(/\\O\b ?/g,"Oe").replace(/\\o\b ?/g,"oe")
+    .replace(/\\L\b ?/g,"L").replace(/\\l\b ?/g,"l").replace(/\\i\b ?/g,"i").replace(/\\j\b ?/g,"j")
+    // generic accent macros: keep the base letter, drop the accent
+    .replace(/\\[`'^~="vcuHrkbd.]\s*\{?([A-Za-z])\}?/g,"$1");
+}
+function translitKey(s){
+  if(!s) return s;
+  s=deLatex(s);
+  s=s.replace(/[äöüÄÖÜßøØåÅæÆœŒłŁđĐðÐþÞ]/g,c=>({"ä":"ae","ö":"oe","ü":"ue","Ä":"Ae","Ö":"Oe","Ü":"Ue",
+    "ß":"ss","ø":"oe","Ø":"Oe","å":"aa","Å":"Aa","æ":"ae","Æ":"Ae","œ":"oe","Œ":"Oe",
+    "ł":"l","Ł":"L","đ":"d","Đ":"D","ð":"d","Ð":"D","þ":"th","Þ":"Th"}[c]));
+  s=s.normalize("NFD").replace(/[̀-ͯ]/g,"");      // strip remaining diacritics
+  return s.replace(/[{}\\]/g,"");                            // drop any leftover TeX braces/slashes
+}
+function makeKey(e){
+  const ks=CONFIG.keyStyle;
+  // transliterate the source fields FIRST, so accented first letters survive word extraction
+  const authors=translitKey(e.fields.author||e.fields.editor||"");
+  const last=firstAuthorLast(authors);
+  const lasts=authors.split(/\s+and\s+/i).map(firstAuthorLastFromName).join("");
+  const year=(e.fields.year||"").replace(/[^\d]/g,"").slice(0,4)||"0000";
+  const word=firstMeaningfulWord(translitKey(e.fields.title||""));
+  let out;
+  if(ks.mode==="default"){
+    const L=applyCase(last,ks.case);
+    const W=applyCase(word,ks.case);
+    out=[L,year,W].filter(Boolean).join(ks.separator);
+  }else{
+    // template mode
+    out=applyCase(ks.template
+      .replace(/{authorlasts}/g,lasts)
+      .replace(/{authorlast}/g,last)
+      .replace(/{year}/g,year)
+      .replace(/{word}/g,word)
+      .replace(/{type}/g,e.type), ks.case);
+  }
+  return out;
+}
+function firstAuthorLastFromName(a){
+  a=a.trim().replace(/[{}]/g,""); if(!a)return"";
+  if(a.includes(","))return a.split(",")[0].trim().split(/\s+/).pop();
+  return a.split(/\s+/).pop();
+}
+
+/* ---------- 6. FORMATTER / SERIALIZER ---------------------- */
+function protectWordsInTitle(title){
+  let t=title;
+  for(const w of CONFIG.protectedWords){
+    // case-insensitive match, but always write back the canonical casing of the
+    // protected word — so Title-casing can never alter it (DNA stays DNA, not Dna)
+    const re=new RegExp(`(^|[^{\\w])(${escapeRe(w)})([^}\\w]|$)`,"gi");
+    t=t.replace(re,(m,a,b,c)=>a+"{"+w+"}"+c);
+  }
+  return t;
+}
+function orderedFieldNames(e){
+  const fo=CONFIG.formatting.fieldOrder;
+  const present=Object.keys(e.fields).filter(f=>!CONFIG.formatting.dropFields.includes(f));
+  const inOrder=fo.filter(f=>present.includes(f));
+  const rest=present.filter(f=>!fo.includes(f)).sort();
+  return [...inOrder,...rest];
+}
+function serializeEntry(e,useFixedKey,overrideKey){
+  const F=CONFIG.formatting;
+  const type=F.lowercaseType?e.type.toLowerCase():e.type;
+  const key=overrideKey || (useFixedKey&&CONFIG.keyStyle.mode!=="off"?makeKey(e):e.key);
+  const names=orderedFieldNames(e);
+  const ind=" ".repeat(F.indent);
+  const pad=F.alignEquals?Math.max(0,...names.map(x=>x.length)):0;
+  const open=F.quoteStyle==="quotes"?'"':"{";
+  const close=F.quoteStyle==="quotes"?'"':"}";
+  const lines=names.map((fn,idx)=>{
+    let v=e.fields[fn];
+    if(fn==="title"){
+      if(F.titlecaseTitles) v=titleCase(v);
+      v=protectWordsInTitle(v);
+    }
+    if(fn==="doi" && CONFIG.checks.doiFormat) v=normDoi(v);
+    if(fn==="pages" && CONFIG.checks.requirePageRangeDash)
+      v=v.replace(/^(\d+)\s*-\s*(\d+)$/,"$1--$2");
+    const name=F.lowercaseFieldNames?fn.toLowerCase():fn;
+    const namePadded=F.alignEquals?name.padEnd(pad):name;
+    const comma=(idx<names.length-1||F.trailingComma)?",":"";
+    return `${ind}${namePadded} = ${open}${v}${close}${comma}`;
+  });
+  return `@${type}{${key},\n${lines.join("\n")}\n}`;
+}
+function titleCase(s){
+  // Leave {braced} segments untouched; Title-Case the rest. Stopwords stay lowercase
+  // except the very first word. (Protected words are then re-cased by protectWordsInTitle.)
+  let first=true;
+  return s.replace(/(\{[^{}]*\})|([^{}]+)/g,(m,braced,free)=>{
+    if(braced){ first=false; return braced; }
+    return free.replace(/[A-Za-z]+(?:['’\-][A-Za-z]+)*/g,(w)=>{
+      const lw=w.toLowerCase();
+      const out=(!first && STOPWORDS.has(lw)) ? lw : w.charAt(0).toUpperCase()+w.slice(1).toLowerCase();
+      first=false;
+      return out;
+    });
+  });
+}
+function sortEntries(entries){
+  const o=CONFIG.ordering; if(o.sortBy==="none")return entries;
+  const dir=o.direction==="desc"?-1:1;
+  const keyf={
+    key:e=>e.key.toLowerCase(),
+    year:e=>(e.fields.year||"").padStart(4,"0"),
+    author:e=>firstAuthorLast(e.fields.author||e.fields.editor||"").toLowerCase(),
+    type:e=>e.type
+  }[o.sortBy]||(e=>e.key);
+  return [...entries].sort((a,b)=>{const x=keyf(a),y=keyf(b);return x<y?-1*dir:x>y?1*dir:0;});
+}
+// "modified" = the user edited / autofixed / added this entry (beyond auto-formatting).
+function isChanged(e){ return !!e._dirty; }
+function exportBib(){
+  // Entries sorted, fields ordered & formatted — but citation KEYS are kept as-is
+  // (never auto-renamed), since changing them would break \cite in the document.
+  // Use the per-entry "Rename key → …" fix to change a key on purpose.
+  const sorted=sortEntries(ENTRIES);
+  const body=sorted.map(e=>serializeEntry(e,false)).join("\n\n");
+  return (RAW_PREAMBLE?RAW_PREAMBLE+"\n\n":"")+body+"\n";
+}
+
+/* ---------- 7. ONLINE VERIFIER (multi-database) ------------ */
+/* Each source returns a normalized record, or null. All of these send
+   Access-Control-Allow-Origin:* so they work from a sandboxed page.
+   Normalized record: {title, year, doi, firstAuthor, source, url}.       */
+
+const SOURCES = {
+  crossref:        { label:"Crossref",        byDoi:crossrefByDoi,    byTitle:crossrefByTitle },
+  openalex:        { label:"OpenAlex",        byDoi:openalexByDoi,    byTitle:openalexByTitle },
+  semanticscholar: { label:"Semantic Scholar",byDoi:s2ByDoi,         byTitle:s2ByTitle },
+  datacite:        { label:"DataCite",        byDoi:dataciteByDoi,    byTitle:null },
+  dblp:            { label:"DBLP",            byDoi:null,             byTitle:dblpByTitle }
+};
+
+function mailtoParam(sep){
+  const m=(CONFIG.verification.mailto||"").trim();
+  return m?`${sep}mailto=${encodeURIComponent(m)}`:"";
+}
+async function getJSON(url){ const r=await fetch(url,{headers:{Accept:"application/json"}}); return r.ok?r.json():null; }
+
+/* --- Crossref --- */
+async function crossrefByDoi(doi){
+  const j=await getJSON(`https://api.crossref.org/works/${encodeURIComponent(doi)}${mailtoParam("?")}`);
+  return j&&j.message?normCrossref(j.message):null;
+}
+async function crossrefByTitle(title){
+  const j=await getJSON(`https://api.crossref.org/works?query.bibliographic=${encodeURIComponent(title)}&rows=1${mailtoParam("&")}`);
+  const it=j&&j.message&&j.message.items&&j.message.items[0];
+  return it?normCrossref(it):null;
+}
+function normCrossref(m){
+  const dp=(m.issued&&m.issued["date-parts"])||(m.published&&m.published["date-parts"]);
+  return { title:(m.title&&m.title[0])||"", year:dp&&dp[0]&&dp[0][0]?String(dp[0][0]):"",
+    doi:m.DOI||"", firstAuthor:(m.author&&m.author[0]&&(m.author[0].family||""))||"",
+    journal:(m["container-title"]&&m["container-title"][0])||"", pages:m.page||"",
+    source:"Crossref", url:m.URL||(m.DOI?`https://doi.org/${m.DOI}`:"") };
+}
+
+/* --- OpenAlex --- */
+async function openalexByDoi(doi){
+  const j=await getJSON(`https://api.openalex.org/works/https://doi.org/${encodeURIComponent(doi)}${mailtoParam("?")}`);
+  return j&&j.id?normOpenAlex(j):null;
+}
+async function openalexByTitle(title){
+  const j=await getJSON(`https://api.openalex.org/works?filter=title.search:${encodeURIComponent(title)}&per-page=1${mailtoParam("&")}`);
+  const it=j&&j.results&&j.results[0];
+  return it?normOpenAlex(it):null;
+}
+function normOpenAlex(w){
+  const fa=w.authorships&&w.authorships[0]&&w.authorships[0].author&&w.authorships[0].author.display_name||"";
+  const venue=w.primary_location&&w.primary_location.source&&w.primary_location.source.display_name||"";
+  const b=w.biblio||{};
+  const pages=b.first_page?(b.last_page&&b.last_page!==b.first_page?`${b.first_page}-${b.last_page}`:b.first_page):"";
+  return { title:w.title||w.display_name||"", year:w.publication_year?String(w.publication_year):"",
+    doi:(w.doi||"").replace(/^https?:\/\/(dx\.)?doi\.org\//i,""),
+    firstAuthor:fa.split(/\s+/).pop()||"", journal:venue, pages,
+    source:"OpenAlex", url:w.doi||w.id||"" };
+}
+
+/* --- Semantic Scholar --- */
+async function s2ByDoi(doi){
+  const j=await getJSON(`https://api.semanticscholar.org/graph/v1/paper/DOI:${encodeURIComponent(doi)}?fields=title,year,externalIds,authors,venue,journal`);
+  return j&&j.title?normS2(j):null;
+}
+async function s2ByTitle(title){
+  const j=await getJSON(`https://api.semanticscholar.org/graph/v1/paper/search?query=${encodeURIComponent(title)}&limit=1&fields=title,year,externalIds,authors,venue,journal`);
+  const it=j&&j.data&&j.data[0];
+  return it?normS2(it):null;
+}
+function normS2(p){
+  const fa=p.authors&&p.authors[0]&&p.authors[0].name||"";
+  return { title:p.title||"", year:p.year?String(p.year):"",
+    doi:(p.externalIds&&p.externalIds.DOI)||"", firstAuthor:fa.split(/\s+/).pop()||"",
+    journal:(p.journal&&p.journal.name)||p.venue||"", pages:(p.journal&&p.journal.pages)||"",
+    source:"Semantic Scholar", url:p.externalIds&&p.externalIds.DOI?`https://doi.org/${p.externalIds.DOI}`:"" };
+}
+
+/* --- DataCite (datasets, software, preprints with DOIs) --- */
+async function dataciteByDoi(doi){
+  const j=await getJSON(`https://api.datacite.org/dois/${encodeURIComponent(doi)}`);
+  const a=j&&j.data&&j.data.attributes;
+  if(!a)return null;
+  const fa=a.creators&&a.creators[0]&&(a.creators[0].familyName||a.creators[0].name||"")||"";
+  return { title:(a.titles&&a.titles[0]&&a.titles[0].title)||"", year:a.publicationYear?String(a.publicationYear):"",
+    doi:a.doi||"", firstAuthor:fa.split(/[\s,]+/).filter(Boolean)[0]||"",
+    journal:(a.container&&a.container.title)||a.publisher||"", pages:"", source:"DataCite",
+    url:a.url||(a.doi?`https://doi.org/${a.doi}`:"") };
+}
+
+/* --- DBLP (CS bibliography; CORS works for the search API) --- */
+async function dblpByTitle(title){
+  const j=await getJSON(`https://dblp.org/search/publ/api?q=${encodeURIComponent(title)}&format=json&h=1`);
+  const hit=j&&j.result&&j.result.hits&&j.result.hits.hit&&j.result.hits.hit[0]&&j.result.hits.hit[0].info;
+  if(!hit)return null;
+  let fa=""; const au=hit.authors&&hit.authors.author;
+  if(au){ const first=Array.isArray(au)?au[0]:au; fa=(first&&(first.text||first))||""; }
+  return { title:(hit.title||"").replace(/\.$/,""), year:hit.year?String(hit.year):"",
+    doi:hit.doi||"", firstAuthor:String(fa).split(/\s+/).pop()||"",
+    journal:hit.venue||"", pages:hit.pages||"", source:"DBLP",
+    url:hit.ee||hit.url||"" };
+}
+
+/* --- URL availability check ---
+   Cross-origin pages can't read another site's HTTP status, so we use a
+   no-cors request: it RESOLVES for any reply (even 404) and only REJECTS
+   on a network-level failure (dead domain, refused connection, TLS error,
+   timeout). That reliably catches the common case — link rot / dead hosts —
+   but cannot distinguish a live 404 page from a real one. */
+async function checkUrl(url){
+  if(!url) return null;
+  const ctrl=new AbortController();
+  const t=setTimeout(()=>ctrl.abort(),CONFIG.verification.urlTimeoutMs||8000);
+  try{
+    await fetch(url,{method:"GET",mode:"no-cors",redirect:"follow",signal:ctrl.signal});
+    clearTimeout(t); return {ok:true};
+  }catch(err){
+    clearTimeout(t);
+    return {ok:false, reason: err.name==="AbortError"?"timed out":"unreachable"};
+  }
+}
+
+/* --- preprint detection & published-version lookup --- */
+function arxivId(e){
+  const f=e.fields;
+  // explicit eprint field (with arXiv archiveprefix, or anything that looks like an id)
+  if(f.eprint){
+    const ap=(f.archiveprefix||f.eprinttype||"").toLowerCase();
+    if(ap.includes("arxiv")||!ap) {const m=f.eprint.match(/\d{4}\.\d{4,5}(v\d+)?|[a-z-]+\/\d{7}/i); if(m)return m[0];}
+  }
+  // arxiv DOI: 10.48550/arXiv.2103.12345
+  if(f.doi){ const m=f.doi.match(/10\.48550\/arxiv\.(\S+)/i); if(m)return m[1].replace(/[{}]/g,""); }
+  // any url/note/howpublished pointing at arxiv.org/abs/<id>
+  for(const k of ["url","note","howpublished","journal"]){
+    if(f[k]){ const m=f[k].match(/arxiv\.org\/(?:abs|pdf)\/([^\s",}]+?)(?:v\d+)?(?:\.pdf)?(?=[\s",}]|$)/i); if(m)return m[1]; }
+  }
+  return null;
+}
+function isPreprint(e){
+  return !!arxivId(e) ||
+    /arxiv|preprint|biorxiv|medrxiv|ssrn/i.test((e.fields.archiveprefix||"")+(e.fields.howpublished||"")+(e.fields.note||"")+(e.fields.journal||"")) ||
+    (e.fields.doi&&/10\.48550\/arxiv/i.test(e.fields.doi));
+}
+/* return several candidates so we can pick a *published* (non-preprint) one */
+async function crossrefCandidates(title){
+  const j=await getJSON(`https://api.crossref.org/works?query.bibliographic=${encodeURIComponent(title)}&rows=5${mailtoParam("&")}`);
+  const items=(j&&j.message&&j.message.items)||[];
+  return items.map(m=>({...normCrossref(m), type:m.type||""}));
+}
+async function openalexCandidates(title){
+  const j=await getJSON(`https://api.openalex.org/works?filter=title.search:${encodeURIComponent(title)}&per-page=5${mailtoParam("&")}`);
+  return ((j&&j.results)||[]).map(w=>({...normOpenAlex(w), type:w.type||""}));
+}
+function isPublishedCandidate(c){
+  if(!c.doi) return false;
+  if(/10\.48550\/arxiv/i.test(c.doi)) return false;        // that's the preprint DOI
+  if(/preprint|posted-content/i.test(c.type)) return false; // explicitly a preprint
+  return true;
+}
+async function findPublishedVersion(e,title){
+  if(!title) return null;
+  let cands=[];
+  try{ cands=cands.concat(await crossrefCandidates(title)); }catch(err){}
+  try{ cands=cands.concat(await openalexCandidates(title)); }catch(err){}
+  const tset=tok(title);
+  const hits=cands.filter(isPublishedCandidate)
+    .map(c=>({...c, sim:jaccard(tset,tok(c.title||""))}))
+    .filter(c=>c.sim>=Math.max(0.6,CONFIG.verification.titleSimThreshold))
+    .sort((a,b)=>b.sim-a.sim);
+  return hits[0]||null;
+}
+
+/* Query one source: prefer DOI lookup, fall back to title search. */
+async function querySource(name,doi,title){
+  const s=SOURCES[name]; if(!s) return null;
+  if(doi && s.byDoi){ const r=await s.byDoi(doi); if(r) return r; }
+  if(title && s.byTitle){ return await s.byTitle(title); }
+  return null;
+}
+
+/* Does this single record agree with the entry on every field we can compare?
+   Used to short-circuit cross-checking: one clean confirmation is enough. */
+function recordConfirms(e,r,doi,title){
+  if(!r.title && !r.doi) return false;               // nothing solid to confirm against
+  const V=CONFIG.verification;
+  const efYear=(e.fields.year||e.fields.date||"").replace(/\D/g,"").slice(0,4);
+  const efAuthor=firstAuthorLast(e.fields.author||e.fields.editor||"").toLowerCase();
+  if(efYear && r.year && r.year!==efYear) return false;
+  if(efAuthor && r.firstAuthor && r.firstAuthor.toLowerCase()!==efAuthor) return false;
+  if(title && r.title && jaccard(tok(title),tok(r.title))<V.titleSimThreshold) return false;
+  if(doi && r.doi && normDoi(r.doi)!==doi) return false;
+  const efJournal=(e.fields.journal||e.fields.journaltitle||e.fields.booktitle||"").replace(/[{}]/g,"").trim();
+  if(efJournal && r.journal && !journalMatch(efJournal,r.journal)) return false;
+  return true;
+}
+
+async function verifyEntry(e){
+  const out={status:"unchecked",notes:[],matches:[],fixes:[]};
+  const V=CONFIG.verification;
+  const enabled=(V.sources||[]).filter(s=>SOURCES[s]);
+  if(!enabled.length){ out.status="error"; out.notes.push("No verification sources enabled (see Config)."); return out; }
+  const doi=e.fields.doi?normDoi(e.fields.doi):null;
+  const title=e.fields.title?e.fields.title.replace(/[{}]/g,"").trim():"";
+
+  const recs=[];
+  try{
+    for(const name of enabled){
+      const rec=await querySource(name,doi,title);
+      if(!rec) continue;
+      recs.push(rec);
+      // Stop early once a source agrees on everything — no need to ask the rest.
+      // (Without cross-check we already stop at the first hit; with cross-check we
+      //  keep going only while there's still a discrepancy worth a second opinion.)
+      if(!V.crossCheck || recordConfirms(e,rec,doi,title)) break;
+    }
+  }catch(err){ out.status="error"; out.notes.push("Network/CORS blocked: "+err.message); return out; }
+
+  if(!recs.length){
+    out.status="notfound";
+    out.notes.push(`No match in ${enabled.map(n=>SOURCES[n].label).join(", ")}.`);
+    await augmentVerify(e,out,title);
+    return out;
+  }
+
+  out.status="found";
+  out.matches=recs.map(r=>r.source);
+  const primary=recs[0];
+  out.source=recs.map(r=>r.source).join(" + ");
+  out.matchedTitle=primary.title; out.matchedDoi=primary.doi; out.matchedUrl=primary.url;
+
+  const efYear=(e.fields.year||"").replace(/\D/g,"");
+  const efAuthor=firstAuthorLast(e.fields.author||e.fields.editor||"").toLowerCase();
+  const jfield=e.fields.journaltitle!=null?"journaltitle":e.fields.booktitle!=null?"booktitle":"journal";
+  const efJournal=(e.fields.journal||e.fields.journaltitle||e.fields.booktitle||"").replace(/[{}]/g,"").trim();
+  const efPages=(e.fields.pages||"").replace(/[{}]/g,"").trim();
+  // record a one-click fix (first source to suggest a given field wins)
+  const addFix=(field,value,label)=>{ if(value && !out.fixes.some(f=>f.field===field)) out.fixes.push({field,value:String(value),label}); };
+
+  // Aggregate cross-source signals.
+  for(const r of recs){
+    if(r.year && efYear && r.year!==efYear){
+      out.notes.push(`Year: file=${efYear} vs ${r.source}=${r.year}`);
+      addFix("year",r.year,`Set year → ${r.year}`);
+    }
+    if(r.firstAuthor && efAuthor && r.firstAuthor.toLowerCase()!==efAuthor)
+      out.notes.push(`First author: file=${efAuthor} vs ${r.source}=${r.firstAuthor.toLowerCase()}`);
+    if(r.title && title){
+      const sim=jaccard(tok(title),tok(r.title));
+      if(sim<V.titleSimThreshold) out.notes.push(`Low title similarity vs ${r.source} (${(sim*100|0)}%) — possible mismatch/fabrication`);
+    }
+    if(r.journal && efJournal && !journalMatch(efJournal,r.journal)){
+      out.notes.push(`Journal/venue: file="${efJournal}" vs ${r.source}="${r.journal}"`);
+      addFix(jfield,r.journal,`Set ${jfield} → ${r.journal}`);
+    }
+    if(r.pages && efPages && pagesDiffer(efPages,r.pages)){
+      out.notes.push(`Pages: file=${efPages} vs ${r.source}=${r.pages}`);
+      addFix("pages",r.pages,`Set pages → ${r.pages}`);
+    }
+  }
+  // DOI suggestion if we have one and the entry doesn't.
+  const suggestDoi=recs.map(r=>r.doi).find(Boolean);
+  if(suggestDoi && !doi){ out.notes.push(`Missing DOI; found ${suggestDoi}`); addFix("doi",normDoi(suggestDoi),`Add DOI ${normDoi(suggestDoi)}`); }
+  if(doi && suggestDoi && normDoi(suggestDoi)!==doi){ out.notes.push(`DOI differs: file=${doi} vs found=${normDoi(suggestDoi)}`); addFix("doi",normDoi(suggestDoi),`Set DOI → ${normDoi(suggestDoi)}`); }
+
+  await augmentVerify(e,out,title);
+  if(out.notes.length===0) out.notes.push(`Confirmed by ${out.source}.`);
+  return out;
+}
+
+/* URL liveness + published-version lookup, shared by found & not-found paths */
+async function augmentVerify(e,out,title){
+  const V=CONFIG.verification;
+  // dead-link check on the url field
+  if(V.checkUrls && e.fields.url){
+    const u=e.fields.url.replace(/[{}]/g,"").trim();
+    try{
+      const r=await checkUrl(u);
+      if(r){ out.urlStatus=r; out.urlChecked=u;
+        if(!r.ok) out.notes.push(`URL ${r.reason}: ${u}`); }
+    }catch(err){}
+  }
+  // published version of an arXiv/preprint entry
+  if(V.findPublished && isPreprint(e)){
+    out.isPreprint=true;
+    try{
+      const pub=await findPublishedVersion(e,title);
+      if(pub){ out.published=pub;
+        out.notes.push(`Published version found: ${pub.doi}${pub.year?` (${pub.year})`:""}`);
+        const cur=e.fields.doi?normDoi(e.fields.doi):null;
+        if(pub.doi && normDoi(pub.doi)!==cur && !out.fixes.some(f=>f.field==="doi"))
+          out.fixes.push({field:"doi",value:normDoi(pub.doi),label:`Use published DOI ${normDoi(pub.doi)}`});
+      }else out.notes.push("Preprint — no published version found yet.");
+    }catch(err){}
+  }
+}
+function tok(s){return new Set(s.toLowerCase().replace(/[{}]/g,"").replace(/[^a-z0-9\s]/g," ").split(/\s+/).filter(w=>w.length>2));}
+function jaccard(a,b){const i=[...a].filter(x=>b.has(x)).length;const u=new Set([...a,...b]).size;return u?i/u:0;}
+
+/* Journal/venue comparison that tolerates abbreviations:
+   "J. Mach. Learn. Res." should still match "Journal of Machine Learning Research".
+   We match each significant word by prefix (mach~machine), so abbreviations align. */
+const JSTOP=new Set("the of and for a an on in to & proceedings annual international conference workshop on".split(" "));
+function jWords(s){return s.toLowerCase().replace(/[^a-z0-9\s]/g," ").split(/\s+/).filter(w=>w&&!JSTOP.has(w));}
+function journalMatch(a,b){
+  const A=jWords(a),B=jWords(b);
+  // Skip when either side is a single token: it's usually an acronym (NeurIPS, JMLR,
+  // PNAS) that can't be prefix-matched, and one-word names are too risky to compare.
+  if(A.length<2 || B.length<2) return true;
+  const [short,long]=A.length<=B.length?[A,B]:[B,A];
+  let hit=0;
+  for(const w of short){
+    if(long.some(x=>x===w||(w.length>=3&&x.startsWith(w))||(x.length>=3&&w.startsWith(x)))) hit++;
+  }
+  return hit/short.length>=0.6;
+}
+// Only compare purely numeric page ranges — skip eLocation/article ids like "e0123456".
+function pageSpan(s){ if(/[a-zA-Z]/.test(s||"")) return null;
+  const m=(s||"").replace(/[—–]/g,"-").match(/\d+/g); return m?[m[0],m[m.length-1]]:null; }
+function pagesDiffer(a,b){
+  const A=pageSpan(a),B=pageSpan(b);
+  if(!A||!B) return false;                          // can't compare (e.g. article number)
+  if(A[0]!==B[0]) return true;                      // different start page
+  if(A[1]!==B[1] && A[0]!==A[1] && B[0]!==B[1]) return true; // both ranges, different end
+  return false;
+}
+
+/* ---------- 8. UI ------------------------------------------ */
+const $=s=>document.querySelector(s);
+const drop=$("#drop"), fileInput=$("#file");
+
+["dragenter","dragover"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add("hot");}));
+["dragleave","drop"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove("hot");}));
+drop.addEventListener("drop",e=>{const f=e.dataTransfer.files[0]; if(f) readFile(f);});
+$("#btnPick").onclick=()=>fileInput.click();
+fileInput.onchange=e=>{const f=e.target.files[0]; if(f) readFile(f);};
+
+function readFile(f){
+  const r=new FileReader();
+  r.onload=()=>{ loadText(r.result); toast(`Loaded ${f.name}`); };
+  r.readAsText(f);
+}
+function loadText(text){
+  const {entries,preamble}=parseBib(text);
+  ENTRIES=entries; RAW_PREAMBLE=preamble;
+  lintAll(ENTRIES);
+  render();
+}
+
+function render(){
+  ENTRIES=sortEntries(ENTRIES);  // visual order matches export order
+  const errs=ENTRIES.reduce((s,e)=>s+e.errCount,0);
+  const warns=ENTRIES.reduce((s,e)=>s+e.warnCount,0);
+  const clean=ENTRIES.filter(e=>!e.errCount&&!e.warnCount).length;
+  const mod=ENTRIES.filter(isChanged).length;
+  $("#summary").style.display="flex";
+  $("#summary").innerHTML=
+    `<span class="chip"><b>${ENTRIES.length}</b> entries</span>`+
+    `<span class="chip ${errs?'err':''}"><b>${errs}</b> errors</span>`+
+    `<span class="chip ${warns?'warn':''}"><b>${warns}</b> warnings</span>`+
+    `<span class="chip ok"><b>${clean}</b> clean</span>`+
+    (mod?`<span class="chip" style="border-color:var(--accent);color:var(--accent)"><b>${mod}</b> modified</span>`:"");
+  $("#toolbar").style.display="flex";
+  $("#entries").style.display="block";
+  $("#btnExport").disabled=false;
+  renderEntries();
+}
+/* the entries currently shown, honouring both the status filter and the search box */
+function filteredEntries(){
+  const q=CUR_SEARCH.trim().toLowerCase();
+  return ENTRIES.filter(e=>{
+    if(CUR_FILTER==="err" && !(e.errCount>0)) return false;
+    if(CUR_FILTER==="warn" && !(e.warnCount>0&&!e.errCount)) return false;
+    if(CUR_FILTER==="clean" && (e.errCount||e.warnCount)) return false;
+    if(CUR_FILTER==="mod" && !isChanged(e)) return false;
+    if(q){
+      const hay=(e.key+" "+(e.fields.title||"")+" "+(e.fields.author||e.fields.editor||"")).toLowerCase();
+      if(!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+function renderEntries(){
+  const box=$("#entries"); box.innerHTML="";
+  const list=filteredEntries();
+  if(!list.length){ box.innerHTML=`<p class="muted" style="padding:16px">No entries match.</p>`; return; }
+  for(const e of list){ box.appendChild(entryEl(e)); if(e._verify) paintVerify(e); }
+}
+const OPEN=new Set();   // remembers which entries are expanded across re-renders
+function entryEl(e){
+  const d=document.createElement("details"); d.className="entry";
+  const kl=e.key.toLowerCase();
+  if(OPEN.has(kl)) d.open=true;
+  d.addEventListener("toggle",()=>{ d.open?OPEN.add(kl):OPEN.delete(kl); });
+  const title=(e.fields.title||"").replace(/[{}]/g,"").slice(0,120)||"(no title)";
+  const fmt=serializeEntry(e,false).trim();   // formatted view = what gets exported (original key kept)
+  const badges=[];
+  if(isChanged(e))badges.push(`<span class="badge mod" title="modified — you edited or autofixed this entry">✎</span>`);
+  if(e.errCount)badges.push(`<span class="badge e">${e.errCount}</span>`);
+  if(e.warnCount)badges.push(`<span class="badge w">${e.warnCount}</span>`);
+  if(!e.errCount&&!e.warnCount)badges.push(`<span class="badge ok">✓</span>`);
+  e._fixacts=[];   // index → action, for the fix buttons below
+  const issues=e.issues.map(x=>{
+    const btns=(x.actions||[]).map(a=>{
+      const id=e._fixacts.push(a)-1;
+      return `<button class="fixbtn${a.auto?' auto':''}" data-fix="${id}">${escapeHtml(a.label)}</button>`;
+    }).join("");
+    return `<div class="issue ${x.sev==='err'?'e':'w'}"><span class="ic">${x.sev==='err'?'✕':'!'}</span>`+
+      `<span>${escapeHtml(x.msg)}</span>`+
+      (btns?`<span class="fixwrap">${btns}</span>`:(x.fix?`<span class="fix">→ ${escapeHtml(x.fix)}</span>`:''))+
+      `</div>`;
+  }).join("");
+  const hasAuto=e.issues.some(x=>(x.actions||[]).some(a=>a.auto));
+  const verifySlot=`<div class="verify" data-key="${escapeHtml(e.key)}"></div>`;
+  d.innerHTML=
+    `<summary><span class="etype">${e.type}</span>`+
+    `<span class="ekey">${escapeHtml(e.key)}</span>`+
+    `<span class="etitle">${escapeHtml(title)}</span>`+
+    `<span class="badges">${badges.join("")}</span></summary>`+
+    `<div class="ebody">`+
+      (issues?`<div class="issues">${issues}</div>`:`<p class="muted" style="margin-bottom:12px">No lint issues.</p>`)+
+      verifySlot+
+      `<div class="ebar">`+
+        `<button class="ed-edit">✎ Edit</button>`+
+        `<button class="ed-verify">⌕ Verify</button>`+
+        (hasAuto?`<button class="ed-autofix primary">⚡ Auto-fix this entry</button>`:"")+
+        `<span class="spacer"></span>`+
+        `<button class="ed-del danger">Delete</button>`+
+      `</div>`+
+      `<div class="entry-view twocol">`+
+        `<div><div class="lab">Original</div><pre class="code">${escapeHtml(e._orig.trim())}</pre></div>`+
+        `<div><div class="lab">Formatted${isChanged(e)?" · edited":""}</div>`+
+          `<pre class="code">${escapeHtml(fmt)}</pre></div>`+
+      `</div>`+
+      `<div class="entry-edit field" style="display:none">`+
+        `<label>Edit BibTeX — type, key and any field</label>`+
+        `<textarea class="ed-area" spellcheck="false">${escapeHtml(fmt)}</textarea>`+
+        `<div class="ebar" style="margin:10px 0 0">`+
+          `<button class="ed-apply primary">Apply changes</button>`+
+          `<button class="ed-cancel">Cancel</button>`+
+        `</div>`+
+      `</div>`+
+    `</div>`;
+  // wire edit controls
+  const bar=d.querySelector(".ebar"), view=d.querySelector(".entry-view"),
+        edit=d.querySelector(".entry-edit"), area=d.querySelector(".ed-area");
+  d.querySelector(".ed-edit").onclick=ev=>{ev.preventDefault();
+    bar.style.display="none"; view.style.display="none"; edit.style.display="block"; area.focus();};
+  d.querySelector(".ed-cancel").onclick=ev=>{ev.preventDefault(); area.value=fmt;
+    edit.style.display="none"; bar.style.display="flex"; view.style.display="grid";};
+  d.querySelector(".ed-apply").onclick=ev=>{ev.preventDefault(); applyEdit(e,area.value);};
+  d.querySelector(".ed-verify").onclick=ev=>{ev.preventDefault(); verifyOne(e,ev.currentTarget);};
+  d.querySelector(".ed-del").onclick=ev=>{ev.preventDefault(); deleteEntry(e);};
+  d.querySelectorAll(".fixbtn").forEach(b=>b.onclick=ev=>{ev.preventDefault();
+    applyFix(e,e._fixacts[+b.dataset.fix]);});
+  const af=d.querySelector(".ed-autofix");
+  if(af) af.onclick=ev=>{ev.preventDefault(); autoFixEntry(e);};
+  return d;
+}
+/* ---- autocorrect ---- */
+// apply one fix to the entry's data; returns true if the entry itself changed
+function mutateEntry(e,act){
+  switch(act.kind){
+    case "setField": e.fields[act.field]=act.value; if(!e.order.includes(act.field))e.order.push(act.field); return true;
+    case "removeField": delete e.fields[act.field]; e.order=e.order.filter(x=>x!==act.field); return true;
+    case "renameField":{ const v=e.fields[act.field]; delete e.fields[act.field];
+      e.order=e.order.filter(x=>x!==act.field);
+      if(e.fields[act.to]==null){ e.fields[act.to]=v; e.order.push(act.to); } return true; }
+    case "setKey": e.key=act.value; return true;
+    case "allowField": if(!CONFIG.optionalFields.includes(act.field)) CONFIG.optionalFields.push(act.field); return false; // config change, not an entry change
+  }
+  return false;
+}
+function applyFix(e,act){
+  if(!act) return;
+  const oldKey=e.key.toLowerCase();
+  if(mutateEntry(e,act)) e._dirty=true;
+  if(OPEN.has(oldKey)){ OPEN.delete(oldKey); OPEN.add(e.key.toLowerCase()); }
+  lintAll(ENTRIES); render(); toast("Fixed");
+}
+function autoFixEntry(e){
+  let n=0;
+  for(const is of e.issues) for(const a of (is.actions||[])) if(a.auto && mutateEntry(e,a)){ n++; e._dirty=true; }
+  lintAll(ENTRIES); render(); toast(n?`Auto-fixed ${n} issue${n>1?"s":""}`:"Nothing to auto-fix");
+}
+function autoFixAll(){
+  let n=0, ents=0;
+  for(const e of ENTRIES){ let c=0;
+    for(const is of e.issues) for(const a of (is.actions||[])) if(a.auto && mutateEntry(e,a)){ c++; }
+    if(c){ e._dirty=true; n+=c; ents++; }
+  }
+  lintAll(ENTRIES); render();
+  toast(n?`Auto-fixed ${n} issue${n>1?"s":""} across ${ents} entr${ents>1?"ies":"y"}`:"Nothing to auto-fix");
+}
+/* Re-parse one edited entry, swap it into ENTRIES, re-lint and re-render. */
+function applyEdit(e,text){
+  const {entries:parsed}=parseBib(text);
+  if(!parsed.length){ toast("Couldn't parse — check the BibTeX syntax"); return; }
+  const ne=parsed[0];
+  const idx=ENTRIES.indexOf(e);
+  if(idx<0){ toast("Entry no longer exists"); return; }
+  ne._orig=e._orig;   // keep the pristine original in the "Original" pane
+  ne._dirty=true;
+  ENTRIES[idx]=ne;
+  OPEN.delete(e.key.toLowerCase()); OPEN.add(ne.key.toLowerCase()); // keep it expanded
+  lintAll(ENTRIES); render();
+  toast("Entry updated");
+}
+function deleteEntry(e){
+  if(!window.confirm(`Delete entry "${e.key}"? This can't be undone.`)) return;
+  const idx=ENTRIES.indexOf(e); if(idx<0) return;
+  ENTRIES.splice(idx,1); OPEN.delete(e.key.toLowerCase());
+  lintAll(ENTRIES); render();
+  toast("Entry deleted");
+}
+function escapeHtml(s){return (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+
+/* filters */
+document.querySelectorAll(".filterbtn").forEach(b=>b.onclick=()=>{
+  document.querySelectorAll(".filterbtn").forEach(x=>x.classList.remove("active"));
+  b.classList.add("active"); CUR_FILTER=b.dataset.f; renderEntries();
+});
+/* search box (debounced) */
+let _searchT=null;
+$("#search").oninput=e=>{
+  clearTimeout(_searchT);
+  _searchT=setTimeout(()=>{ CUR_SEARCH=e.target.value; renderEntries(); },180);
+};
+
+/* auto-fix every safe issue across all entries */
+$("#btnAutofix").onclick=()=>autoFixAll();
+
+/* add a new, blank entry and drop straight into its editor */
+$("#btnAdd").onclick=()=>{
+  const used=new Set(ENTRIES.map(e=>e.key.toLowerCase()));
+  let k="newentry", i=1; while(used.has(k.toLowerCase())) k="newentry"+(++i);
+  const tpl=`@article{${k},\n  author = {},\n  title = {},\n  journal = {},\n  year = {},\n}`;
+  const ne=parseBib(tpl).entries[0];
+  ENTRIES.unshift(ne);
+  OPEN.add(ne.key.toLowerCase());
+  CUR_FILTER="all";
+  document.querySelectorAll(".filterbtn").forEach(x=>x.classList.toggle("active",x.dataset.f==="all"));
+  lintAll(ENTRIES); render();
+  // open its editor
+  const slot=document.querySelector(`.verify[data-key="${cssEsc(ne.key)}"]`);
+  const det=slot&&slot.closest("details");
+  if(det){ det.open=true; const b=det.querySelector(".ed-edit"); if(b)b.click();
+    det.scrollIntoView({behavior:"smooth",block:"center"}); }
+  toast("New entry added — edit and Apply");
+};
+
+/* export */
+$("#btnExport").onclick=()=>{
+  const mod=ENTRIES.filter(isChanged).length;
+  const blob=new Blob([exportBib()],{type:"text/plain"});
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
+  a.download="references.bib"; a.click(); URL.revokeObjectURL(a.href);
+  toast(`Exported ${ENTRIES.length} entries — ${mod} with your changes, rest verbatim`);
+};
+
+/* verify online — runs over the currently visible (filtered + searched) entries;
+   the button doubles as a Stop control while running */
+let VERIFYING=false;
+$("#btnVerify").onclick=async()=>{
+  const btn=$("#btnVerify");
+  if(VERIFYING){ VERIFYING=false; return; }   // second click = Stop
+  const list=filteredEntries();
+  if(!list.length){ toast("No visible entries to verify"); return; }
+  VERIFYING=true; btn.classList.add("running");
+  let done=0;
+  for(const e of list){
+    if(!VERIFYING) break;
+    e._verify=await verifyEntry(e);
+    paintVerify(e);
+    done++; btn.textContent=`Stop (${done}/${list.length})`;
+    if(!VERIFYING) break;
+    await new Promise(r=>setTimeout(r,CONFIG.verification.delayMs||120)); // be polite to the APIs
+  }
+  const stopped=!VERIFYING && done<list.length;
+  VERIFYING=false; btn.classList.remove("running"); btn.textContent="Verify visible…";
+  toast(stopped?`Stopped after ${done}`:"Verification complete");
+};
+/* verify a single entry on demand */
+async function verifyOne(e,btn){
+  if(btn){ btn.disabled=true; btn.textContent="Verifying…"; }
+  e._verify=await verifyEntry(e);
+  paintVerify(e);
+  if(btn){ btn.disabled=false; btn.textContent="⌕ Verify"; }
+}
+function paintVerify(e){
+  const slot=document.querySelector(`.verify[data-key="${cssEsc(e.key)}"]`);
+  if(!slot||!e._verify)return;
+  const v=e._verify;
+  const cls=v.status==="found"?(v.notes.some(n=>/mismatch|differs|fabrication|Missing|Year:|author:|Journal\/venue:|Pages:|unreachable|timed out/i.test(n))?"w":"ok")
+            :v.status==="notfound"?"w":"e";
+  const link=v.matchedUrl?` <a href="${escapeHtml(v.matchedUrl)}" target="_blank" rel="noopener">${escapeHtml(v.matchedDoi||"link")}</a>`
+            :v.matchedDoi?` <span class="muted">[${escapeHtml(v.matchedDoi)}]</span>`:"";
+  let rows=`<div class="issue ${cls}"><span class="ic">⌕</span>`+
+    `<span><b>${escapeHtml(v.source||v.status)}</b>: ${v.notes.map(escapeHtml).join("; ")}${link}</span></div>`;
+  // URL liveness as its own coloured row
+  if(v.urlStatus){
+    const uok=v.urlStatus.ok;
+    rows+=`<div class="issue ${uok?'ok':'e'}"><span class="ic">${uok?'🔗':'⚠'}</span>`+
+      `<span><b>URL</b>: ${uok?'reachable':escapeHtml(v.urlStatus.reason)} `+
+      `<a href="${escapeHtml(v.urlChecked)}" target="_blank" rel="noopener">${escapeHtml(v.urlChecked)}</a></span></div>`;
+  }
+  // published version of a preprint
+  if(v.published){
+    const p=v.published;
+    rows+=`<div class="issue ok"><span class="ic">★</span><span><b>Published version</b>: `+
+      `<a href="https://doi.org/${escapeHtml(p.doi)}" target="_blank" rel="noopener">${escapeHtml(p.doi)}</a>`+
+      `${p.year?` (${escapeHtml(p.year)})`:""} — ${escapeHtml((p.title||"").slice(0,90))}</span></div>`;
+  }
+  // one-click fixes that apply a database value to the entry
+  if(v.fixes&&v.fixes.length){
+    rows+=`<div class="ebar" style="margin:0">`+
+      v.fixes.map((f,i)=>`<button class="fixbtn auto vfixbtn" data-vf="${i}">${escapeHtml(f.label)}</button>`).join("")+
+      `</div>`;
+  }
+  slot.innerHTML=`<div class="issues" style="margin:0 0 12px">${rows}</div>`;
+  slot.querySelectorAll(".vfixbtn").forEach(b=>b.onclick=ev=>{ev.preventDefault();
+    const f=v.fixes[+b.dataset.vf]; v.fixes.splice(+b.dataset.vf,1);  // consume it
+    applyFix(e,{kind:"setField",field:f.field,value:f.value});});
+}
+function cssEsc(s){return (window.CSS&&CSS.escape)?CSS.escape(s):s.replace(/["\\]/g,"\\$&");}
+
+/* ---------- 9. CONFIG MODAL UI ----------------------------- */
+const modal=$("#cfgModal");
+$("#btnConfig").onclick=()=>{buildConfigUI();modal.classList.add("open");};
+$("#cfgClose").onclick=()=>modal.classList.remove("open");
+modal.onclick=e=>{if(e.target===modal)modal.classList.remove("open");};
+$("#cfgReset").onclick=()=>{CONFIG=structuredClone(DEFAULT_CONFIG);buildConfigUI();
+  if(ENTRIES.length){lintAll(ENTRIES);render();}toast("Config reset to defaults");};
+$("#cfgSave").onclick=()=>{
+  readConfigUI();
+  if(ENTRIES.length){lintAll(ENTRIES);render();}
+  modal.classList.remove("open");toast("Re-linted with current config");
+};
+$("#cfgExportJson").onclick=()=>{
+  readConfigUI();
+  const blob=new Blob([JSON.stringify(CONFIG,null,2)],{type:"application/json"});
+  const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="tidybiber.config.json";a.click();URL.revokeObjectURL(a.href);
+  toast("Exported tidybiber.config.json");
+};
+$("#cfgImportJson").onclick=()=>$("#cfgFile").click();
+$("#cfgFile").onchange=e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();
+  r.onload=()=>{try{CONFIG=migrateConfig(JSON.parse(r.result));buildConfigUI();
+    if(ENTRIES.length){lintAll(ENTRIES);render();}toast("Config imported & applied");}catch(x){toast("Invalid JSON");}};r.readAsText(f);};
+
+function buildConfigUI(){
+  const C=CONFIG;
+  $("#cfgBody").innerHTML=`
+  <details class="cfg" open><summary>Citation key style</summary><div class="inner">
+    <div class="field"><label>Mode</label>
+      <div class="seg" id="ks_mode">
+        ${seg("default","Default",C.keyStyle.mode)}
+        ${seg("template","Template",C.keyStyle.mode)}
+        ${seg("off","Off",C.keyStyle.mode)}
+      </div>
+      <p class="hint">Google style → <code class="k">Lastname${C.keyStyle.separator}year${C.keyStyle.separator}word</code> using first author and first meaningful title word.</p>
+    </div>
+    <div class="field"><label>Template (template mode)</label>
+      <input type="text" id="ks_template" value="${attr(C.keyStyle.template)}">
+      <p class="hint">Tokens: <code class="k">{authorlast}</code> <code class="k">{authorlasts}</code> <code class="k">{year}</code> <code class="k">{word}</code> <code class="k">{type}</code></p>
+    </div>
+    <div class="row"><label>Separator</label><input type="text" id="ks_sep" value="${attr(C.keyStyle.separator)}" style="width:80px"></div>
+    <div class="row"><label>Case</label>
+      <select id="ks_case">${opt(["lower","title","upper","asis"],C.keyStyle.case)}</select></div>
+    <div class="row"><input type="checkbox" id="ks_stop" ${C.keyStyle.stripStopwords?"checked":""}><label>Strip stopwords for first word</label></div>
+  </div></details>
+
+  <details class="cfg"><summary>Protected words (literal casing)</summary><div class="inner">
+    <p class="hint">These are wrapped in <code class="k">{ }</code> inside titles so BibTeX keeps their casing. One per line or comma-separated.</p>
+    <textarea id="cf_protect" rows="4">${esc(C.protectedWords.join(", "))}</textarea>
+  </div></details>
+
+  <details class="cfg"><summary>Required fields per entry type</summary><div class="inner">
+    <p class="hint">JSON map. Use <code class="k">"author|editor"</code> to require at least one of several.</p>
+    <textarea id="cf_required" rows="8">${esc(JSON.stringify(C.requiredFields,null,2))}</textarea>
+  </div></details>
+
+  <details class="cfg"><summary>Optional / allowed fields</summary><div class="inner">
+    <p class="hint">Fields not required and not listed here raise an "unexpected field" warning. Comma-separated.</p>
+    <textarea id="cf_optional" rows="3">${esc(C.optionalFields.join(", "))}</textarea>
+  </div></details>
+
+  <details class="cfg"><summary>Formatting</summary><div class="inner">
+    <div class="row"><label>Indent spaces</label><input type="text" id="fm_indent" value="${C.formatting.indent}" style="width:60px"></div>
+    <div class="row"><label>Value delimiter</label><select id="fm_quote">${opt(["braces","quotes"],C.formatting.quoteStyle)}</select></div>
+    <div class="row"><input type="checkbox" id="fm_align" ${C.formatting.alignEquals?"checked":""}><label>Align = signs</label></div>
+    <div class="row"><input type="checkbox" id="fm_lct" ${C.formatting.lowercaseType?"checked":""}><label>Lowercase entry types</label></div>
+    <div class="row"><input type="checkbox" id="fm_lcf" ${C.formatting.lowercaseFieldNames?"checked":""}><label>Lowercase field names</label></div>
+    <div class="row"><input type="checkbox" id="fm_tc" ${C.formatting.trailingComma?"checked":""}><label>Trailing comma</label></div>
+    <div class="row"><input type="checkbox" id="fm_ttl" ${C.formatting.titlecaseTitles?"checked":""}><label>Title-Case titles (protected words keep their casing)</label></div>
+    <div class="field" style="margin-top:12px"><label>Field order</label>
+      <textarea id="fm_order" rows="2">${esc(C.formatting.fieldOrder.join(", "))}</textarea></div>
+    <div class="field"><label>Drop these fields on export</label>
+      <input type="text" id="fm_drop" value="${attr(C.formatting.dropFields.join(", "))}"></div>
+  </div></details>
+
+  <details class="cfg"><summary>Ordering</summary><div class="inner">
+    <div class="row"><label>Sort by</label><select id="or_by">${opt(["key","year","author","type","none"],C.ordering.sortBy)}</select></div>
+    <div class="row"><label>Direction</label><select id="or_dir">${opt(["asc","desc"],C.ordering.direction)}</select></div>
+  </div></details>
+
+  <details class="cfg"><summary>Checks</summary><div class="inner">
+    ${chk("fourDigitYear","Year must be 4 digits")}
+    ${chk("requirePageRangeDash","Page ranges use -- (en-dash)")}
+    ${chk("doiFormat","DOI must be bare (not a URL)")}
+    ${chk("monthAbbrev","Month is a standard abbreviation")}
+    ${chk("detectDuplicateKeys","Detect duplicate keys")}
+    ${chk("detectDuplicateDOIs","Detect duplicate DOIs")}
+    ${chk("warnUnknownFields","Warn on unexpected fields")}
+  </div></details>
+
+  <details class="cfg"><summary>Online verification</summary><div class="inner">
+    <p class="hint">Cross-checks title, year, first author and DOI against the databases below — by DOI when present, else by title search. All are free and CORS-enabled.</p>
+    <div class="field"><label>Databases (tick to enable)</label>
+      ${srcChk("crossref","Crossref","journals, books, conferences — the broadest source")}
+      ${srcChk("openalex","OpenAlex","open scholarly index, very broad coverage")}
+      ${srcChk("semanticscholar","Semantic Scholar","strong CS / AI / biomed coverage")}
+      ${srcChk("datacite","DataCite","datasets, software & preprints with DOIs (DOI only)")}
+      ${srcChk("dblp","DBLP","computer-science bibliography (title only)")}
+    </div>
+    <div class="row"><input type="checkbox" id="vf_cross" ${C.verification.crossCheck?"checked":""}><label>Cross-check: query <i>all</i> enabled sources and compare (slower, stricter)</label></div>
+    <div class="row" style="align-items:flex-start"><input type="checkbox" id="vf_urls" ${C.verification.checkUrls?"checked":""}><label>Check <code class="k">url</code> links are still alive <span class="muted">— browsers can only detect a dead host/timeout cross-origin, not a live 404 page</span></label></div>
+    <div class="row" style="align-items:flex-start"><input type="checkbox" id="vf_pub" ${C.verification.findPublished?"checked":""}><label>Find published version of arXiv / preprints <span class="muted">— searches Crossref &amp; OpenAlex for a peer-reviewed version with a DOI</span></label></div>
+    <div class="field" style="margin-top:12px"><label>Polite-pool email</label>
+      <p class="hint">Sent as <code class="k">mailto=</code> to Crossref &amp; OpenAlex for faster, more reliable access. Recommended.</p>
+      <input type="text" id="vf_mailto" value="${attr(C.verification.mailto)}" placeholder="you@university.edu"></div>
+    <div class="row"><label>Title-match threshold</label><input type="text" id="vf_sim" value="${C.verification.titleSimThreshold}" style="width:70px"><span class="muted">0–1; below this flags a possible mismatch</span></div>
+    <div class="row"><label>Delay between entries (ms)</label><input type="text" id="vf_delay" value="${C.verification.delayMs}" style="width:80px"></div>
+    <div class="row"><label>URL timeout (ms)</label><input type="text" id="vf_utimeout" value="${C.verification.urlTimeoutMs}" style="width:80px"></div>
+  </div></details>`;
+
+  // segmented control behaviour
+  document.querySelectorAll("#ks_mode button").forEach(b=>b.onclick=()=>{
+    document.querySelectorAll("#ks_mode button").forEach(x=>x.classList.remove("on"));
+    b.classList.add("on");
+  });
+
+  function seg(val,label,cur){return `<button data-v="${val}" class="${cur===val?'on':''}">${label}</button>`;}
+  function opt(arr,cur){return arr.map(v=>`<option ${v===cur?'selected':''}>${v}</option>`).join("");}
+  function chk(key,label){return `<div class="row"><input type="checkbox" data-ck="${key}" ${C.checks[key]?"checked":""}><label>${label}</label></div>`;}
+  function srcChk(key,label,desc){const on=(C.verification.sources||[]).includes(key);
+    return `<div class="row" style="align-items:flex-start"><input type="checkbox" data-src="${key}" ${on?"checked":""}>`+
+      `<label><b>${label}</b> <span class="muted">— ${desc}</span></label></div>`;}
+  function esc(s){return escapeHtml(s);}
+  function attr(s){return escapeHtml(s);}
+}
+function readConfigUI(silent){
+  const g=id=>document.getElementById(id);
+  const C=CONFIG;
+  if(!g("ks_template"))return; // modal not built yet
+  const mode=document.querySelector("#ks_mode button.on");
+  if(mode)C.keyStyle.mode=mode.dataset.v;
+  C.keyStyle.template=g("ks_template").value;
+  C.keyStyle.separator=g("ks_sep").value;
+  C.keyStyle.case=g("ks_case").value;
+  C.keyStyle.stripStopwords=g("ks_stop").checked;
+  C.protectedWords=splitList(g("cf_protect").value);
+  try{C.requiredFields=JSON.parse(g("cf_required").value);}catch(e){if(!silent)toast("Required-fields JSON invalid — kept old");}
+  C.optionalFields=splitList(g("cf_optional").value);
+  C.formatting.indent=parseInt(g("fm_indent").value)||2;
+  C.formatting.quoteStyle=g("fm_quote").value;
+  C.formatting.alignEquals=g("fm_align").checked;
+  C.formatting.lowercaseType=g("fm_lct").checked;
+  C.formatting.lowercaseFieldNames=g("fm_lcf").checked;
+  C.formatting.trailingComma=g("fm_tc").checked;
+  C.formatting.titlecaseTitles=g("fm_ttl").checked;
+  C.formatting.fieldOrder=splitList(g("fm_order").value);
+  C.formatting.dropFields=splitList(g("fm_drop").value);
+  C.ordering.sortBy=g("or_by").value;
+  C.ordering.direction=g("or_dir").value;
+  document.querySelectorAll("[data-ck]").forEach(cb=>C.checks[cb.dataset.ck]=cb.checked);
+  // verification
+  C.verification.sources=[...document.querySelectorAll("[data-src]")].filter(cb=>cb.checked).map(cb=>cb.dataset.src);
+  C.verification.crossCheck=g("vf_cross").checked;
+  C.verification.checkUrls=g("vf_urls").checked;
+  C.verification.findPublished=g("vf_pub").checked;
+  C.verification.mailto=g("vf_mailto").value.trim();
+  const sim=parseFloat(g("vf_sim").value); C.verification.titleSimThreshold=isNaN(sim)?0.5:sim;
+  C.verification.delayMs=parseInt(g("vf_delay").value)||120;
+  C.verification.urlTimeoutMs=parseInt(g("vf_utimeout").value)||8000;
+}
+function splitList(s){return s.split(/[,\n]/).map(x=>x.trim()).filter(Boolean);}
+
+/* ---------- 10. misc --------------------------------------- */
+function toast(msg){const t=$("#toast");t.textContent=msg;t.classList.add("show");
+  clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove("show"),2200);}
+document.addEventListener("keydown",e=>{if(e.key==="Escape")modal.classList.remove("open");});
+$("#year").textContent=new Date().getFullYear();   // footer year, always current
+
+</script>
+</body>
+</html>
