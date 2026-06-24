@@ -87,6 +87,7 @@
   .badge.w{background:var(--warn-bg);color:var(--warn)}
   .badge.ok{background:var(--ok-bg);color:var(--ok)}
   .badge.mod{background:var(--accent-soft);color:var(--accent)}
+  .badge.res{background:var(--ok-bg);color:var(--ok);width:auto;padding:0 7px}
   .ebody{border-top:1px solid var(--line);padding:14px 16px;background:#fcfcfb}
   .issues{margin-bottom:12px;display:flex;flex-direction:column;gap:6px}
   .issue{font-size:13px;padding:7px 10px;border-radius:7px;display:flex;gap:8px;align-items:flex-start}
@@ -188,7 +189,7 @@
     <span class="spacer"></span>
     <button id="btnAutofix">⚡ Auto-fix all</button>
     <button id="btnAdd">+ Add entry</button>
-    <button id="btnVerify">Verify visible…</button>
+    <button id="btnVerify">Verify filtered…</button>
   </div>
 
   <div class="entries" id="entries"></div>
@@ -593,7 +594,7 @@ function firstAuthorLast(authorStr){
   const parts=a.split(/\s+/); return parts[parts.length-1];
 }
 function keyNamePart(s){
-  return s.trim().replace(/[^A-Za-z0-9]+/g,"-").replace(/^-+|-+$/g,"");
+  return translitKey(s).trim().replace(/[^A-Za-z0-9]+/g,"-").replace(/^-+|-+$/g,"");
 }
 function firstMeaningfulWord(title){
   if(!title) return "";
@@ -761,6 +762,8 @@ function sortEntries(entries){
 }
 // "modified" = the user edited / autofixed / added this entry (beyond auto-formatting).
 function isChanged(e){ return !!e._dirty; }
+function visibleErrCount(e){ return e._resolved ? 0 : e.errCount; }
+function visibleWarnCount(e){ return e._resolved ? 0 : e.warnCount; }
 function exportBib(){
   // Entries sorted, fields ordered & formatted — but citation KEYS are kept as-is
   // (never auto-renamed), since changing them would break \cite in the document.
@@ -946,8 +949,8 @@ async function findPublishedVersion(e,title){
 /* Query one source: prefer DOI lookup, fall back to title search. */
 async function querySource(name,doi,title){
   const s=SOURCES[name]; if(!s) return null;
-  if(doi && s.byDoi){ const r=await s.byDoi(doi); if(r) return r; }
-  if(title && s.byTitle){ return await s.byTitle(title); }
+  if(doi && s.byDoi){ const r=await s.byDoi(doi); if(r) return {...r,_lookup:"doi"}; }
+  if(title && s.byTitle){ const r=await s.byTitle(title); if(r) return {...r,_lookup:"title"}; }
   return null;
 }
 
@@ -957,9 +960,9 @@ function recordConfirms(e,r,doi,title){
   if(!r.title && !r.doi) return false;               // nothing solid to confirm against
   const V=CONFIG.verification;
   const efYear=(e.fields.year||e.fields.date||"").replace(/\D/g,"").slice(0,4);
-  const efAuthor=firstAuthorLast(e.fields.author||e.fields.editor||"").toLowerCase();
+  const efAuthor=normAuthorLast(entryFirstAuthorLast(e));
   if(efYear && r.year && r.year!==efYear) return false;
-  if(efAuthor && r.firstAuthor && r.firstAuthor.toLowerCase()!==efAuthor) return false;
+  if(efAuthor && r.firstAuthor && !authorLastMatches(efAuthor,normAuthorLast(r.firstAuthor))) return false;
   if(title && r.title && jaccard(tok(title),tok(r.title))<V.titleSimThreshold) return false;
   if(doi && r.doi && normDoi(r.doi)!==doi) return false;
   const efJournal=(e.fields.journal||e.fields.journaltitle||e.fields.booktitle||"").replace(/[{}]/g,"").trim();
@@ -969,6 +972,20 @@ function recordConfirms(e,r,doi,title){
 function lowTitleSimilarity(r,title){
   if(!title || !r.title) return false;
   return jaccard(tok(title),tok(r.title)) < CONFIG.verification.titleSimThreshold;
+}
+function normAuthorLast(s){ return keyNamePart(translitKey(String(s||""))).toLowerCase(); }
+function authorLastMatches(a,b){
+  return !!(a && b && (a===b || a.endsWith("-"+b) || b.endsWith("-"+a)));
+}
+function entryFirstAuthorLast(e){
+  const raw=e.fields.author||e.fields.editor||"";
+  return raw ? firstAuthorLast(raw) : "";
+}
+function titleAuthorMismatch(e,r){
+  if(r._lookup!=="title") return false;
+  const efAuthor=normAuthorLast(entryFirstAuthorLast(e));
+  const dbAuthor=normAuthorLast(r.firstAuthor);
+  return !!(efAuthor && dbAuthor && !authorLastMatches(efAuthor,dbAuthor));
 }
 
 async function verifyEntry(e){
@@ -981,25 +998,39 @@ async function verifyEntry(e){
 
   const recs=[];
   const lowTitleRejects=[];
-  try{
-    for(const name of enabled){
-      const rec=await querySource(name,doi,title);
-      if(!rec) continue;
-      if(lowTitleSimilarity(rec,title)){
-        lowTitleRejects.push(`${rec.source} (${(jaccard(tok(title),tok(rec.title))*100|0)}%)`);
-        continue;
-      }
-      recs.push(rec);
-      // Stop early once a source agrees on everything — no need to ask the rest.
-      // (Without cross-check we already stop at the first hit; with cross-check we
-      //  keep going only while there's still a discrepancy worth a second opinion.)
-      if(!V.crossCheck || recordConfirms(e,rec,doi,title)) break;
+  const authorRejects=[];
+  const sourceErrors=[];
+  for(const name of enabled){
+    let rec=null;
+    try{
+      rec=await querySource(name,doi,title);
+    }catch(err){
+      const label=SOURCES[name].label;
+      sourceErrors.push(`${label}: ${err.message||"load failed"}`);
+      continue;
     }
-  }catch(err){ out.status="error"; out.notes.push("Network/CORS blocked: "+err.message); return out; }
+    if(!rec) continue;
+    if(lowTitleSimilarity(rec,title)){
+      lowTitleRejects.push(`${rec.source} (${(jaccard(tok(title),tok(rec.title))*100|0)}%)`);
+      continue;
+    }
+    if(titleAuthorMismatch(e,rec)){
+      const efAuthor=normAuthorLast(entryFirstAuthorLast(e));
+      authorRejects.push(`${rec.source} (file=${efAuthor}, ${rec.source}=${normAuthorLast(rec.firstAuthor)})`);
+      continue;
+    }
+    recs.push(rec);
+    // Stop early once a source agrees on everything — no need to ask the rest.
+    // (Without cross-check we already stop at the first hit; with cross-check we
+    //  keep going only while there's still a discrepancy worth a second opinion.)
+    if(!V.crossCheck || recordConfirms(e,rec,doi,title)) break;
+  }
 
   if(!recs.length){
-    out.status="notfound";
+    out.status=sourceErrors.length===enabled.length ? "error" : "notfound";
+    if(sourceErrors.length) out.notes.push(`Source unavailable: ${sourceErrors.join("; ")}.`);
     if(lowTitleRejects.length) out.notes.push(`Rejected low-title-similarity match${lowTitleRejects.length>1?"es":""}: ${lowTitleRejects.join(", ")}.`);
+    if(authorRejects.length) out.notes.push(`Rejected title match${authorRejects.length>1?"es":""} with different first author: ${authorRejects.join(", ")}.`);
     out.notes.push(`No match in ${enabled.map(n=>SOURCES[n].label).join(", ")}.`);
     await augmentVerify(e,out,title);
     return out;
@@ -1012,7 +1043,7 @@ async function verifyEntry(e){
   out.matchedTitle=primary.title; out.matchedDoi=primary.doi; out.matchedUrl=primary.url;
 
   const efYear=(e.fields.year||"").replace(/\D/g,"");
-  const efAuthor=firstAuthorLast(e.fields.author||e.fields.editor||"").toLowerCase();
+  const efAuthor=normAuthorLast(entryFirstAuthorLast(e));
   const jfield=e.fields.journaltitle!=null?"journaltitle":e.fields.booktitle!=null?"booktitle":"journal";
   const efJournal=(e.fields.journal||e.fields.journaltitle||e.fields.booktitle||"").replace(/[{}]/g,"").trim();
   const efPages=(e.fields.pages||"").replace(/[{}]/g,"").trim();
@@ -1025,8 +1056,8 @@ async function verifyEntry(e){
       out.notes.push(`Year: file=${efYear} vs ${r.source}=${r.year}`);
       addFix("year",r.year,`Set year → ${r.year}`);
     }
-    if(r.firstAuthor && efAuthor && r.firstAuthor.toLowerCase()!==efAuthor)
-      out.notes.push(`First author: file=${efAuthor} vs ${r.source}=${r.firstAuthor.toLowerCase()}`);
+    if(r.firstAuthor && efAuthor && !authorLastMatches(efAuthor,normAuthorLast(r.firstAuthor)))
+      out.notes.push(`First author: file=${efAuthor} vs ${r.source}=${normAuthorLast(r.firstAuthor)}`);
     if(r.title && title){
       const sim=jaccard(tok(title),tok(r.title));
       if(sim<V.titleSimThreshold) out.notes.push(`Low title similarity vs ${r.source} (${(sim*100|0)}%) — possible mismatch/fabrication`);
@@ -1085,6 +1116,7 @@ function jaccard(a,b){const i=[...a].filter(x=>b.has(x)).length;const u=new Set(
 const JSTOP=new Set("the of and for a an on in to & proceedings annual international conference workshop on".split(" "));
 function jWords(s){return s.toLowerCase().replace(/[^a-z0-9\s]/g," ").split(/\s+/).filter(w=>w&&!JSTOP.has(w));}
 function journalMatch(a,b){
+  if(isArxivVenue(a) && isArxivVenue(b)) return true;
   const A=jWords(a),B=jWords(b);
   // Skip when either side is a single token: it's usually an acronym (NeurIPS, JMLR,
   // PNAS) that can't be prefix-matched, and one-word names are too risky to compare.
@@ -1095,6 +1127,9 @@ function journalMatch(a,b){
     if(long.some(x=>x===w||(w.length>=3&&x.startsWith(w))||(x.length>=3&&w.startsWith(x)))) hit++;
   }
   return hit/short.length>=0.6;
+}
+function isArxivVenue(s){
+  return /(^|\b)arxiv(\.org)?\b/i.test(String(s||""));
 }
 // Only compare purely numeric page ranges — skip eLocation/article ids like "e0123456".
 function pageSpan(s){ if(/[a-zA-Z]/.test(s||"")) return null;
@@ -1132,9 +1167,9 @@ function loadText(text){
 
 function render(){
   ENTRIES=sortEntries(ENTRIES);  // visual order matches export order
-  const errs=ENTRIES.reduce((s,e)=>s+e.errCount,0);
-  const warns=ENTRIES.reduce((s,e)=>s+e.warnCount,0);
-  const clean=ENTRIES.filter(e=>!e.errCount&&!e.warnCount).length;
+  const errs=ENTRIES.reduce((s,e)=>s+visibleErrCount(e),0);
+  const warns=ENTRIES.reduce((s,e)=>s+visibleWarnCount(e),0);
+  const clean=ENTRIES.filter(e=>!visibleErrCount(e)&&!visibleWarnCount(e)).length;
   const mod=ENTRIES.filter(isChanged).length;
   $("#summary").style.display="flex";
   $("#summary").innerHTML=
@@ -1152,12 +1187,18 @@ function render(){
 function filteredEntries(){
   const q=CUR_SEARCH.trim().toLowerCase();
   return ENTRIES.filter(e=>{
-    if(CUR_FILTER==="err" && !(e.errCount>0)) return false;
-    if(CUR_FILTER==="warn" && !(e.warnCount>0&&!e.errCount)) return false;
-    if(CUR_FILTER==="clean" && (e.errCount||e.warnCount)) return false;
+    const errCount=visibleErrCount(e), warnCount=visibleWarnCount(e);
+    if(CUR_FILTER==="err" && !(errCount>0)) return false;
+    if(CUR_FILTER==="warn" && !(warnCount>0&&!errCount)) return false;
+    if(CUR_FILTER==="clean" && (errCount||warnCount)) return false;
     if(CUR_FILTER==="mod" && !isChanged(e)) return false;
     if(q){
-      const hay=(e.key+" "+(e.fields.title||"")+" "+(e.fields.author||e.fields.editor||"")).toLowerCase();
+      const issueText=(e._resolved?[]:e.issues).map(x=>{
+        const sev=x.sev==="err" ? "error err" : "warning warn";
+        const actions=(x.actions||[]).map(a=>a.label).join(" ");
+        return `${sev} ${x.msg} ${x.fix||""} ${actions}`;
+      }).join(" ");
+      const hay=(e.key+" "+(e.fields.title||"")+" "+(e.fields.author||e.fields.editor||"")+" "+issueText).toLowerCase();
       if(!hay.includes(q)) return false;
     }
     return true;
@@ -1180,11 +1221,14 @@ function entryEl(e){
   const diff=diffCodeHtml(e._orig.trim(),fmt);
   const badges=[];
   if(isChanged(e))badges.push(`<span class="badge mod" title="modified — you edited or autofixed this entry">✎</span>`);
-  if(e.errCount)badges.push(`<span class="badge e">${e.errCount}</span>`);
-  if(e.warnCount)badges.push(`<span class="badge w">${e.warnCount}</span>`);
-  if(!e.errCount&&!e.warnCount)badges.push(`<span class="badge ok">✓</span>`);
+  const errCount=visibleErrCount(e), warnCount=visibleWarnCount(e);
+  if(e._resolved)badges.push(`<span class="badge res" title="resolved — issues hidden">✓ resolved</span>`);
+  else if(errCount)badges.push(`<span class="badge e">${errCount}</span>`);
+  if(!e._resolved && warnCount)badges.push(`<span class="badge w">${warnCount}</span>`);
+  if(!errCount&&!warnCount&&!e._resolved)badges.push(`<span class="badge ok">✓</span>`);
   e._fixacts=[];   // index → action, for the fix buttons below
-  const issues=e.issues.map(x=>{
+  const visibleIssues=e._resolved ? [] : e.issues;
+  const issues=visibleIssues.map(x=>{
     const btns=(x.actions||[]).map(a=>{
       const id=e._fixacts.push(a)-1;
       return `<button class="fixbtn${a.auto?' auto':''}" data-fix="${id}">${escapeHtml(a.label)}</button>`;
@@ -1194,7 +1238,8 @@ function entryEl(e){
       (btns?`<span class="fixwrap">${btns}</span>`:(x.fix?`<span class="fix">→ ${escapeHtml(x.fix)}</span>`:''))+
       `</div>`;
   }).join("");
-  const hasAuto=e.issues.some(x=>(x.actions||[]).some(a=>a.auto));
+  const hiddenIssueCount=e._resolved ? e.issues.length : 0;
+  const hasAuto=visibleIssues.some(x=>(x.actions||[]).some(a=>a.auto));
   const verifySlot=`<div class="verify" data-key="${escapeHtml(e.key)}"></div>`;
   d.innerHTML=
     `<summary><span class="etype">${e.type}</span>`+
@@ -1202,9 +1247,12 @@ function entryEl(e){
     `<span class="etitle">${escapeHtml(title)}</span>`+
     `<span class="badges">${badges.join("")}</span></summary>`+
     `<div class="ebody">`+
-      (issues?`<div class="issues">${issues}</div>`:`<p class="muted" style="margin-bottom:12px">No lint issues.</p>`)+
+      (issues?`<div class="issues">${issues}</div>`:
+        e._resolved?`<p class="muted" style="margin-bottom:12px">${hiddenIssueCount} issue${hiddenIssueCount===1?"":"s"} hidden as resolved.</p>`:
+        `<p class="muted" style="margin-bottom:12px">No lint issues.</p>`)+
       verifySlot+
       `<div class="ebar">`+
+        ((e.issues.length||e._resolved)?`<button class="ed-resolve">${e._resolved?"Show issues":"Resolved"}</button>`:"")+
         `<button class="ed-edit">✎ Edit</button>`+
         `<button class="ed-verify">⌕ Verify</button>`+
         (hasAuto?`<button class="ed-autofix primary">⚡ Auto-fix this entry</button>`:"")+
@@ -1235,6 +1283,8 @@ function entryEl(e){
   d.querySelector(".ed-apply").onclick=ev=>{ev.preventDefault(); applyEdit(e,area.value);};
   d.querySelector(".ed-verify").onclick=ev=>{ev.preventDefault(); verifyOne(e,ev.currentTarget);};
   d.querySelector(".ed-del").onclick=ev=>{ev.preventDefault(); deleteEntry(e);};
+  const rb=d.querySelector(".ed-resolve");
+  if(rb) rb.onclick=ev=>{ev.preventDefault(); toggleResolved(e);};
   d.querySelectorAll(".fixbtn").forEach(b=>b.onclick=ev=>{ev.preventDefault();
     applyFix(e,e._fixacts[+b.dataset.fix]);});
   const af=d.querySelector(".ed-autofix");
@@ -1269,7 +1319,7 @@ function autoFixEntry(e){
 }
 function autoFixAll(){
   let n=0, ents=0;
-  for(const e of ENTRIES){ let c=0;
+  for(const e of ENTRIES){ if(e._resolved) continue; let c=0;
     for(const is of e.issues) for(const a of (is.actions||[])) if(a.auto && mutateEntry(e,a)){ c++; }
     if(c){ e._dirty=true; delete e._verify; n+=c; ents++; }
   }
@@ -1286,10 +1336,16 @@ function applyEdit(e,text){
   applyDropFields([ne]);
   ne._orig=e._orig;   // keep the pristine original in the "Original" pane
   ne._dirty=true;
+  ne._resolved=false;
   ENTRIES[idx]=ne;
   OPEN.delete(e.key.toLowerCase()); OPEN.add(ne.key.toLowerCase()); // keep it expanded
   lintAll(ENTRIES); render();
   toast("Entry updated");
+}
+function toggleResolved(e){
+  e._resolved=!e._resolved;
+  render();
+  toast(e._resolved?"Issues hidden for this entry":"Issues shown for this entry");
 }
 function deleteEntry(e){
   if(!window.confirm(`Delete entry "${e.key}"? This can't be undone.`)) return;
@@ -1363,14 +1419,14 @@ $("#btnExport").onclick=()=>{
   toast(`Exported ${ENTRIES.length} formatted entries — ${mod} with your edits`);
 };
 
-/* verify online — runs over the currently visible (filtered + searched) entries;
+/* verify online — runs over the current filtered + searched entries;
    the button doubles as a Stop control while running */
 let VERIFYING=false;
 $("#btnVerify").onclick=async()=>{
   const btn=$("#btnVerify");
   if(VERIFYING){ VERIFYING=false; return; }   // second click = Stop
   const list=filteredEntries().filter(e=>!e._verify || e._verify.status==="unchecked");
-  if(!list.length){ toast("No visible unchecked entries to verify"); return; }
+  if(!list.length){ toast("No filtered unchecked entries to verify"); return; }
   VERIFYING=true; btn.classList.add("running");
   let done=0;
   for(const e of list){
@@ -1382,7 +1438,7 @@ $("#btnVerify").onclick=async()=>{
     await new Promise(r=>setTimeout(r,CONFIG.verification.delayMs||120)); // be polite to the APIs
   }
   const stopped=!VERIFYING && done<list.length;
-  VERIFYING=false; btn.classList.remove("running"); btn.textContent="Verify visible…";
+  VERIFYING=false; btn.classList.remove("running"); btn.textContent="Verify filtered…";
   lintAll(ENTRIES); render();
   toast(stopped?`Stopped after ${done}`:"Verification complete");
 };
@@ -1396,6 +1452,7 @@ async function verifyOne(e,btn){
 function paintVerify(e){
   const slot=document.querySelector(`.verify[data-key="${cssEsc(e.key)}"]`);
   if(!slot||!e._verify)return;
+  if(e._resolved){ slot.innerHTML=""; return; }
   const v=e._verify;
   const cls=v.status==="found"?(v.notes.some(n=>/mismatch|differs|fabrication|Missing|Year:|author:|Journal\/venue:|Pages:|unreachable|timed out/i.test(n))?"w":"ok"):"e";
   const link=v.matchedUrl?` <a href="${escapeHtml(v.matchedUrl)}" target="_blank" rel="noopener">${escapeHtml(v.matchedDoi||"link")}</a>`
