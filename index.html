@@ -258,7 +258,7 @@ const DEFAULT_CONFIG = {
     indent: 2,                 // spaces inside an entry
     fieldOrder: ["author","editor","title","booktitle","journal","journaltitle",
       "year","date","month","volume","number","issue","pages","publisher","series",
-      "address","location","edition","chapter","doi",
+      "address","location","edition","chapter","doi","organization",
       "url","keywords"],
                                // canonical field order; unlisted appended alphabetically
     alignEquals: true,         // line up = signs
@@ -266,7 +266,7 @@ const DEFAULT_CONFIG = {
     lowercaseType: true,       // @Article -> @article
     lowercaseFieldNames: true, // Author= -> author=
     trailingComma: true,
-    dropFields: ["abstract", "rate", "read"],  // remove these fields from the working copy
+    dropFields: ["abstract", "rating", "read", "issn", "langid", "shortjournal", "shorttitle"],  // remove these fields from the working copy
     titlecaseTitles: false     // Preserve title spelling by default; opt in to Title-Case
   },
   ordering: {
@@ -435,7 +435,12 @@ function lintAll(entries){
     for(const r of req){
       const alts=r.split("|");
       if(!alts.some(a=>e.fields[a]&&e.fields[a].length)){
-        add("err",`Missing required field: ${alts.join(" or ")}`);
+        if(alts.includes("booktitle") && isProceedingsEventTitleAlias(e,"eventtitle")){
+          add("warn","Use booktitle instead of eventtitle for proceedings entries","booktitle",
+            [{label:"Rename eventtitle → booktitle",kind:"renameField",field:"eventtitle",to:"booktitle",auto:true}]);
+        }else{
+          add("err",`Missing required field: ${alts.join(" or ")}`);
+        }
       }
     }
     // unknown fields
@@ -443,6 +448,7 @@ function lintAll(entries){
       const CORE=["author","editor","title","year"]; // always valid
       const known=new Set([...CORE,...(req.flatMap(r=>r.split("|"))),...C.optionalFields]);
       for(const f in e.fields) if(!known.has(f)){
+        if(isProceedingsEventTitleAlias(e,f)) continue;
         const to=FIELD_TYPOS[f];
         const acts = to
           ? [{label:`Rename → ${to}`,kind:"renameField",field:f,to,auto:true}]
@@ -468,9 +474,9 @@ function lintAll(entries){
     }
     // doi
     if(ch.doiFormat && e.fields.doi){
-      if(/^https?:\/\//i.test(e.fields.doi.trim()) || /doi\.org/i.test(e.fields.doi)){
+      if(doiNeedsBareFix(e.fields.doi)){
         const bare=normDoi(e.fields.doi);
-        add("warn","DOI should be bare (10.xxxx/...) not a URL",bare,
+        add("warn","DOI should be bare (10.xxxx/...)",bare,
           [{label:"Fix → bare DOI",kind:"setField",field:"doi",value:bare,auto:true}]);
       }
     }
@@ -523,15 +529,37 @@ function lintAll(entries){
   }
   return entries;
 }
+function isProceedingsEventTitleAlias(e,f){
+  return f==="eventtitle" && ["inproceedings","conference"].includes(e.type) && !e.fields.booktitle && !!e.fields.eventtitle;
+}
 function escapeRe(s){return s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");}
-function normDoi(d){return d.replace(/^https?:\/\/(dx\.)?doi\.org\//i,"").replace(/[{}]/g,"").trim().toLowerCase();}
+function normDoi(d){
+  let s=String(d||"").replace(/[{}]/g,"").trim();
+  const m=s.match(/10\.\d{4,9}\/[^\s"'<>]+/i);
+  if(m) s=m[0];
+  s=s
+    .replace(/^doi\s*:\s*/i,"")
+    .replace(/^https?:\/\/(?:dx\.)?doi\.org\//i,"")
+    .replace(/[?#].*$/,"")
+    .replace(/[),.;:]+$/,"")
+    .trim();
+  try{ s=decodeURIComponent(s); }catch(_){}
+  return s.toLowerCase();
+}
+function doiNeedsBareFix(d){
+  const raw=String(d||"").replace(/[{}]/g,"").trim().toLowerCase();
+  return !!raw && normDoi(d)!==raw;
+}
 
 /* ---------- 5. CITATION KEY GENERATOR ---------------------- */
 function firstAuthorLast(authorStr){
   if(!authorStr) return "anon";
   let a=authorStr.split(/\s+and\s+/i)[0].trim().replace(/[{}]/g,"");
-  if(a.includes(",")) return a.split(",")[0].trim().split(/\s+/).pop();
+  if(a.includes(",")) return keyNamePart(a.split(",")[0]);
   const parts=a.split(/\s+/); return parts[parts.length-1];
+}
+function keyNamePart(s){
+  return s.trim().replace(/[^A-Za-z0-9]+/g,"-").replace(/^-+|-+$/g,"");
 }
 function firstMeaningfulWord(title){
   if(!title) return "";
@@ -598,7 +626,7 @@ function makeKey(e){
 }
 function firstAuthorLastFromName(a){
   a=a.trim().replace(/[{}]/g,""); if(!a)return"";
-  if(a.includes(","))return a.split(",")[0].trim().split(/\s+/).pop();
+  if(a.includes(","))return keyNamePart(a.split(",")[0]);
   return a.split(/\s+/).pop();
 }
 
