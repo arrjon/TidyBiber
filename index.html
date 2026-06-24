@@ -266,7 +266,7 @@ const DEFAULT_CONFIG = {
     lowercaseType: true,       // @Article -> @article
     lowercaseFieldNames: true, // Author= -> author=
     trailingComma: true,
-    dropFields: ["abstract"],  // remove these fields on export
+    dropFields: ["abstract", "rate", "read"],  // remove these fields from the working copy
     titlecaseTitles: false     // Preserve title spelling by default; opt in to Title-Case
   },
   ordering: {
@@ -619,6 +619,18 @@ function orderedFieldNames(e){
   const inOrder=fo.filter(f=>present.includes(f));
   const rest=present.filter(f=>!fo.includes(f)).sort();
   return [...inOrder,...rest];
+}
+function applyDropFields(entries){
+  const drops=new Set(CONFIG.formatting.dropFields.map(f=>f.toLowerCase()));
+  if(!drops.size) return 0;
+  let removed=0;
+  for(const e of entries){
+    for(const f of Object.keys(e.fields)){
+      if(drops.has(f.toLowerCase())){ delete e.fields[f]; removed++; }
+    }
+    e.order=e.order.filter(f=>!drops.has(f.toLowerCase()));
+  }
+  return removed;
 }
 function serializeEntry(e,useFixedKey,overrideKey){
   const F=CONFIG.formatting;
@@ -1027,6 +1039,7 @@ function readFile(f){
 function loadText(text){
   const {entries,preamble}=parseBib(text);
   ENTRIES=entries; RAW_PREAMBLE=preamble;
+  applyDropFields(ENTRIES);
   lintAll(ENTRIES);
   render();
 }
@@ -1183,6 +1196,7 @@ function applyEdit(e,text){
   const ne=parsed[0];
   const idx=ENTRIES.indexOf(e);
   if(idx<0){ toast("Entry no longer exists"); return; }
+  applyDropFields([ne]);
   ne._orig=e._orig;   // keep the pristine original in the "Original" pane
   ne._dirty=true;
   ENTRIES[idx]=ne;
@@ -1314,10 +1328,10 @@ $("#btnConfig").onclick=()=>{buildConfigUI();modal.classList.add("open");};
 $("#cfgClose").onclick=()=>modal.classList.remove("open");
 modal.onclick=e=>{if(e.target===modal)modal.classList.remove("open");};
 $("#cfgReset").onclick=()=>{CONFIG=structuredClone(DEFAULT_CONFIG);buildConfigUI();
-  if(ENTRIES.length){lintAll(ENTRIES);render();}toast("Config reset to defaults");};
+  if(ENTRIES.length){applyDropFields(ENTRIES);lintAll(ENTRIES);render();}toast("Config reset to defaults");};
 $("#cfgSave").onclick=()=>{
   readConfigUI();
-  if(ENTRIES.length){lintAll(ENTRIES);render();}
+  if(ENTRIES.length){applyDropFields(ENTRIES);lintAll(ENTRIES);render();}
   modal.classList.remove("open");toast("Re-linted with current config");
 };
 $("#cfgExportJson").onclick=()=>{
@@ -1329,7 +1343,7 @@ $("#cfgExportJson").onclick=()=>{
 $("#cfgImportJson").onclick=()=>$("#cfgFile").click();
 $("#cfgFile").onchange=e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();
   r.onload=()=>{try{CONFIG=migrateConfig(JSON.parse(r.result));buildConfigUI();
-    if(ENTRIES.length){lintAll(ENTRIES);render();}toast("Config imported & applied");}catch(x){toast("Invalid JSON");}};r.readAsText(f);};
+    if(ENTRIES.length){applyDropFields(ENTRIES);lintAll(ENTRIES);render();}toast("Config imported & applied");}catch(x){toast("Invalid JSON");}};r.readAsText(f);};
 
 function buildConfigUI(){
   const C=CONFIG;
@@ -1378,7 +1392,7 @@ function buildConfigUI(){
     <div class="row"><input type="checkbox" id="fm_ttl" ${C.formatting.titlecaseTitles?"checked":""}><label>Title-Case titles (protected words keep their casing)</label></div>
     <div class="field" style="margin-top:12px"><label>Field order</label>
       <textarea id="fm_order" rows="2">${esc(C.formatting.fieldOrder.join(", "))}</textarea></div>
-    <div class="field"><label>Drop these fields on export</label>
+    <div class="field"><label>Drop these fields on import/export</label>
       <input type="text" id="fm_drop" value="${attr(C.formatting.dropFields.join(", "))}"></div>
   </div></details>
 
