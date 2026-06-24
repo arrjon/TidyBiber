@@ -237,10 +237,11 @@ const DEFAULT_CONFIG = {
     conference:    ["author","title","booktitle","year|date"],
     incollection:  ["author","title","booktitle","publisher","year|date"],
     inbook:        ["author","title","chapter|booktitle","publisher","year|date"],
+    phdthesis:     ["author","title","school|institution","year|date"],
   },
   // Fields allowed but optional; anything else triggers an "unexpected field" warning.
   optionalFields: ["volume","number","pages","month","doi","url","editor",
-    "publisher","series","address","edition","organization","keywords",
+    "publisher","series","address","edition","organization","school","institution","type","keywords",
     "booktitle","journal"],
   // Words that must keep exact casing — protected with {braces} in titles.
   protectedWords: ["Bayesian","Gaussian","Markov","Monte Carlo","Euler","Newton",
@@ -266,7 +267,8 @@ const DEFAULT_CONFIG = {
     lowercaseType: true,       // @Article -> @article
     lowercaseFieldNames: true, // Author= -> author=
     trailingComma: true,
-    dropFields: ["abstract", "rating", "read", "issn", "langid", "shortjournal", "shorttitle"],  // remove these fields from the working copy
+    dropFields: ["abstract", "rating", "read", "issn", "isbn", "langid", "language", "eprint", "elocation-id", "mesh",
+      "pubstate", "eprinttype", "eprintclass", "eprint", "shortjournal", "shorttitle", "pmid", "pst", "copyright"],  // remove these fields from the working copy
     titlecaseTitles: false     // Preserve title spelling by default; opt in to Title-Case
   },
   ordering: {
