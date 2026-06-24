@@ -242,8 +242,8 @@ const DEFAULT_CONFIG = {
   // Words that must keep exact casing — protected with {braces} in titles.
   protectedWords: ["Bayesian","Gaussian","Markov","Monte Carlo","Euler","Newton",
     "Fourier","Hilbert","Lipschitz","Gibbs","Poisson","Laplace","Hessian","Jacobian",
-    "Riemann","Lagrangian","Hamiltonian","COVID-19","DNA","RNA","mRNA","CRISPR",
-    "AI","ML","GPU","CPU","GPT","CNN","RNN","LSTM"],
+    "Riemann","Lagrangian","Hamiltonian","COVID-19","DNA","RNA","mRNA","CRISPR","Akaike",
+    "AIC","BIC","AI","ML","GPU","CPU","GPT","CNN","RNN","LSTM"],
   // Citation key style: default = LastnameYEARword ; templated otherwise.
   keyStyle: {
     mode: "default",            // "default" | "template" | "off"
@@ -264,8 +264,8 @@ const DEFAULT_CONFIG = {
     lowercaseType: true,       // @Article -> @article
     lowercaseFieldNames: true, // Author= -> author=
     trailingComma: true,
-    dropFields: [],            // remove these fields on export
-    titlecaseTitles: true      // Title-Case the title field (protected words keep their casing)
+    dropFields: ["abstract"],  // remove these fields on export
+    titlecaseTitles: false     // Preserve title spelling by default; opt in to Title-Case
   },
   ordering: {
     sortBy: "key",             // "key" | "year" | "author" | "type" | "none"
@@ -647,15 +647,19 @@ function titleCase(s){
   // Leave {braced} segments untouched; Title-Case the rest. Stopwords stay lowercase
   // except the very first word. (Protected words are then re-cased by protectWordsInTitle.)
   let first=true;
-  return s.replace(/(\{[^{}]*\})|([^{}]+)/g,(m,braced,free)=>{
+  return s.replace(/(\{[A-Za-z]\}[A-Za-z]+(?:['’\-][A-Za-z]+)*)|(\{[^{}]*\})|([^{}]+)/g,(m,protectedHead,braced,free)=>{
+    if(protectedHead){ first=false; return protectedHead; }
     if(braced){ first=false; return braced; }
     return free.replace(/[A-Za-z]+(?:['’\-][A-Za-z]+)*/g,(w)=>{
       const lw=w.toLowerCase();
-      const out=(!first && STOPWORDS.has(lw)) ? lw : w.charAt(0).toUpperCase()+w.slice(1).toLowerCase();
+      const out=(!first && STOPWORDS.has(lw)) ? lw : titleCaseWord(w);
       first=false;
       return out;
     });
   });
+}
+function titleCaseWord(w){
+  return w.split("-").map(part=>part.charAt(0).toUpperCase()+part.slice(1).toLowerCase()).join("-");
 }
 function sortEntries(entries){
   const o=CONFIG.ordering; if(o.sortBy==="none")return entries;
