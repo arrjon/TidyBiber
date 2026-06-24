@@ -239,7 +239,7 @@ const DEFAULT_CONFIG = {
   },
   // Fields allowed but optional; anything else triggers an "unexpected field" warning.
   optionalFields: ["volume","number","pages","month","doi","url","editor",
-    "publisher","series","address","edition","abstract","keywords",
+    "publisher","series","address","edition","organization","keywords",
     "booktitle","journal"],
   // Words that must keep exact casing — protected with {braces} in titles.
   protectedWords: ["Bayesian","Gaussian","Markov","Monte Carlo","Euler","Newton",
@@ -258,8 +258,7 @@ const DEFAULT_CONFIG = {
     indent: 2,                 // spaces inside an entry
     fieldOrder: ["author","editor","title","booktitle","journal","journaltitle",
       "year","date","month","volume","number","issue","pages","publisher","series",
-      "address","location","edition","chapter","doi","organization",
-      "url","keywords"],
+      "address","location","edition","chapter","doi","url","keywords"],
                                // canonical field order; unlisted appended alphabetically
     alignEquals: true,         // line up = signs
     quoteStyle: "braces",      // "braces" -> field = {..}  |  "quotes" -> field = ".."
