@@ -4,7 +4,7 @@
 
 **Lint, format, and verify your BibTeX — right in the browser.**
 
-A single self-contained HTML file. Your library never leaves your machine.
+Runs entirely in your browser. Your library never leaves your machine.
 
 [**▶ Open the app**](https://arrjon.github.io/TidyBiber/)
 ·
@@ -20,7 +20,7 @@ A single self-contained HTML file. Your library never leaves your machine.
 - ⚡ **Autocorrects** the easy stuff with one click (`dio`→`doi`, `1-9`→`1--9`, bare DOIs, brace-protected terms…).
 - 🎨 **Formats on load** — entries sorted, fields ordered and aligned.
 - 🔑 **Citation-key styles** — automatically generate keys from author, year, title.
-- 🌐 **Verifies online** against Crossref, OpenAlex, Semantic Scholar, DataCite & DBLP — each entry is checked against the first source (in your configured order) that returns a confident match on title, year, author, venue, pages and DOI, with fixes that apply the looked-up value.
+- 🌐 **Verifies online** against Crossref, OpenAlex, Semantic Scholar, DataCite, DBLP & PMLR — each entry is checked against the first source (in your configured order) that returns a confident match on title, year, author, venue, pages and DOI, with fixes that apply the looked-up value.
 - 🔗 **Checks dead links** and finds the **published version** of arXiv preprints.
 - ✏️ **Edit, add, delete** entries as BibTeX; **search** and filter; **export** the formatted `.bib`.
 
