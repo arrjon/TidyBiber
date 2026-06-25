@@ -177,6 +177,8 @@
   <nav>
     <button id="btnConfig">Config</button>
     <button id="btnReport" disabled>Export report</button>
+    <button id="btnImportReport" disabled>Import report</button>
+    <input type="file" id="reportFile" accept=".txt,text/plain" hidden>
     <button id="btnExport" class="primary" disabled>Export .bib</button>
   </nav>
 </div></header>
@@ -566,6 +568,8 @@ function lintAll(entries){
   return entries;
 }
 const VERIFY_PROBLEM_RE=/mismatch|differs|fabrication|Missing|Year:|author:|Author list|Journal\/venue:|Pages:|unreachable|timed out|Published version|Preprint/i;
+const REPORT_CACHE_START="-----BEGIN TIDYBIBER VERIFICATION CACHE-----";
+const REPORT_CACHE_END="-----END TIDYBIBER VERIFICATION CACHE-----";
 function verificationIssue(e){
   const v=e._verify;
   if(!v || v.status==="unchecked") return null;
@@ -811,6 +815,7 @@ function exportReport(){
   if(!problemEntries.length){
     lines.push("No open lint or verification problems are currently visible in TidyBiber.");
     if(sorted.length-checked) lines.push("Some entries have not been verified online yet.");
+    appendReportCache(lines,sorted);
     return lines.join("\n")+"\n";
   }
   lines.push("Entries needing attention");
@@ -829,8 +834,151 @@ function exportReport(){
     lines.push("Current formatted BibTeX:");
     lines.push(indentBlock(serializeEntry(e,false).trim(),2));
   }
+  appendReportCache(lines,sorted);
   return lines.join("\n")+"\n";
 }
+function appendReportCache(lines,entries){
+  const cached=entries
+    .filter(e=>e._verify&&e._verify.status&&e._verify.status!=="unchecked")
+    .map(e=>({...reportEntryIdentity(e), verify:e._verify}));
+  lines.push(
+    "",
+    "Verification cache",
+    "The block below lets TidyBiber import these online verification results later.",
+    REPORT_CACHE_START,
+    JSON.stringify({version:1, generatedAt:new Date().toISOString(), entries:cached},null,2),
+    REPORT_CACHE_END
+  );
+}
+function importReport(text){
+  const payload=readReportCache(text);
+  if(!payload) return {ok:false, reason:"No TidyBiber verification cache found in this report."};
+  const cached=(payload.entries||[]).filter(x=>x&&x.verify&&x.verify.status);
+  if(!cached.length) return {ok:false, reason:"This report does not contain any saved verification results."};
+  const used=new Set();
+  let matched=0, cleared=0;
+  for(const item of cached){
+    const e=findReportImportMatch(item,used);
+    if(!e) continue;
+    const fresh=refreshImportedVerify(e,JSON.parse(JSON.stringify(item.verify)));
+    e._verify=fresh.verify;
+    cleared+=fresh.cleared;
+    used.add(e);
+    matched++;
+  }
+  if(!matched) return {ok:false, reason:"No saved verification results matched the currently loaded entries."};
+  if(matched){
+    lintAll(ENTRIES);
+    render();
+  }
+  return {ok:true, matched, total:cached.length, cleared};
+}
+function readReportCache(text){
+  const start=String(text||"").indexOf(REPORT_CACHE_START);
+  const end=String(text||"").indexOf(REPORT_CACHE_END);
+  if(start<0 || end<0 || end<=start) return null;
+  const json=String(text).slice(start+REPORT_CACHE_START.length,end).trim();
+  try{return JSON.parse(json);}catch(_){return null;}
+}
+function findReportImportMatch(item,used){
+  const unused=ENTRIES.filter(e=>!used.has(e));
+  const key=String(item.key||"").toLowerCase();
+  if(key){
+    const byKey=unused.find(e=>e.key.toLowerCase()===key);
+    if(byKey) return byKey;
+  }
+  const doi=String(item.doi||"");
+  if(doi){
+    const byDoi=unused.find(e=>e.fields.doi && normDoi(e.fields.doi)===doi);
+    if(byDoi) return byDoi;
+  }
+  const title=String(item.titleKey||"");
+  const year=String(item.year||"");
+  if(title){
+    return unused.find(e=>reportTitleKey(e)===title && (!year || reportYear(e)===year)) || null;
+  }
+  return null;
+}
+function reportEntryIdentity(e){
+  return {
+    key:e.key,
+    type:e.type,
+    titleKey:reportTitleKey(e),
+    year:reportYear(e),
+    doi:e.fields.doi?normDoi(e.fields.doi):""
+  };
+}
+function reportTitleKey(e){
+  return String(e.fields.title||"").replace(/[{}]/g,"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim();
+}
+function reportYear(e){
+  return String(e.fields.year||e.fields.date||"").match(/\d{4}/)?.[0]||"";
+}
+function refreshImportedVerify(e,v){
+  if(!v || v.status!=="found") return {verify:v, cleared:0};
+  let cleared=0;
+  const keep=[];
+  for(const note of v.notes||[]){
+    if(importedVerifyNoteResolved(e,v,note)) cleared++;
+    else keep.push(note);
+  }
+  v.notes=keep;
+  if(v.urlStatus && importedUrlIssueResolved(e,v)){
+    delete v.urlStatus;
+    delete v.urlChecked;
+    cleared++;
+  }
+  if(v.published && e.fields.doi && normDoi(e.fields.doi)===normDoi(v.published.doi)){
+    delete v.published;
+    cleared++;
+  }
+  v.fixes=(v.fixes||[]).filter(f=>{
+    if(importedFixResolved(e,f)){ cleared++; return false; }
+    return true;
+  });
+  if(!v.notes.length) v.notes.push(`Imported cached verification${v.source?` from ${v.source}`:""}; local fields still match the saved result.`);
+  return {verify:v, cleared};
+}
+function importedVerifyNoteResolved(e,v,note){
+  const n=String(note||"");
+  const curDoi=e.fields.doi?normDoi(e.fields.doi):"";
+  const foundDoi=normDoi(v.matchedDoi||(v.doiPreview&&v.doiPreview.doi)||"");
+  let m=n.match(/^Year: file=.* vs .*=(\d{4})$/);
+  if(m) return reportYear(e)===m[1];
+  m=n.match(/^Journal\/venue: file=".*" vs .*="(.+)"$/);
+  if(m) return entryVenue(e) && journalMatch(entryVenue(e),m[1]);
+  m=n.match(/^Pages: file=.* vs .*=([^\s].*)$/);
+  if(m) return e.fields.pages && !pagesDiffer(cleanField(e.fields.pages),m[1]);
+  m=n.match(/^Missing DOI; found (.+)$/);
+  if(m) return curDoi && curDoi===normDoi(m[1]);
+  m=n.match(/^DOI differs: file=.* vs found=(.+)$/);
+  if(m) return curDoi && curDoi===normDoi(m[1]);
+  m=n.match(/^Published version found: ([^\s(]+)/);
+  if(m) return curDoi && curDoi===normDoi(m[1]);
+  m=n.match(/^URL .*: (.+)$/);
+  if(m) return cleanField(e.fields.url)!==m[1].trim();
+  if(/^Low title similarity/i.test(n) && v.matchedTitle)
+    return titleSimilarity(cleanField(e.fields.title),v.matchedTitle).passes(CONFIG.verification.titleSimThreshold);
+  m=n.match(/^First author: file=.* vs .*=([^\s]+)$/);
+  if(m) return authorLastMatches(normAuthorLast(entryFirstAuthorLast(e)),normAuthorLast(m[1]));
+  if(foundDoi && /^Different DOI found but not suggested/i.test(n)) return curDoi===foundDoi;
+  return false;
+}
+function importedUrlIssueResolved(e,v){
+  if(!v.urlStatus || v.urlStatus.ok) return false;
+  return cleanField(e.fields.url)!==String(v.urlChecked||"").trim();
+}
+function importedFixResolved(e,f){
+  if(!f || !f.field) return false;
+  const cur=cleanField(e.fields[f.field]);
+  const val=cleanField(f.value);
+  if(f.field==="doi") return cur && normDoi(cur)===normDoi(val);
+  if(f.field==="pages") return cur && !pagesDiffer(cur,val);
+  if(["journal","journaltitle","booktitle"].includes(f.field)) return cur && journalMatch(cur,val);
+  return cur && cur===val;
+}
+function entryVenue(e){return cleanField(e.fields.journal||e.fields.journaltitle||e.fields.booktitle);}
+function cleanField(s){return String(s||"").replace(/[{}]/g,"").trim();}
 function reportEntryHasProblem(e){
   if(!e._resolved && (e.issues||[]).length) return true;
   const v=e._verify;
@@ -1412,6 +1560,7 @@ function render(){
   $("#toolbar").style.display="flex";
   $("#entries").style.display="block";
   $("#btnReport").disabled=false;
+  $("#btnImportReport").disabled=false;
   $("#btnExport").disabled=false;
   renderEntries();
 }
@@ -1699,6 +1848,18 @@ $("#btnReport").onclick=()=>{
   a.download="tidybiber-report.txt"; a.click(); URL.revokeObjectURL(a.href);
   const problemCount=ENTRIES.filter(reportEntryHasProblem).length;
   toast(`Exported report with ${problemCount} entr${problemCount===1?"y":"ies"} needing attention`);
+};
+$("#btnImportReport").onclick=()=>$("#reportFile").click();
+$("#reportFile").onchange=e=>{
+  const f=e.target.files[0]; if(!f) return;
+  const r=new FileReader();
+  r.onload=()=>{
+    const res=importReport(r.result);
+    if(!res.ok) toast(res.reason);
+    else toast(`Imported verification for ${res.matched}/${res.total} entr${res.total===1?"y":"ies"}${res.cleared?`; cleared ${res.cleared} stale finding${res.cleared===1?"":"s"}`:""}`);
+    e.target.value="";
+  };
+  r.readAsText(f);
 };
 $("#btnExport").onclick=()=>{
   const mod=ENTRIES.filter(isChanged).length;
