@@ -291,7 +291,7 @@ function lintAll(entries){
       const p=cleanField(e.fields.pages);
       const fixed=canonicalPages(p);
       if(fixed!==p){
-        add("warn","Page range uses single dash; should be 12--34",fixed,
+        add("warn",`Page range should use BibTeX double dash: ${fixed}`,fixed,
           [{label:`Fix → ${fixed}`,kind:"setField",field:"pages",value:fixed,auto:true}]);
       }
     }
@@ -305,7 +305,7 @@ function lintAll(entries){
     }
     if(ch.doiFormat && !e.fields.doi){
       const arxivDoi=arxivDoiFor(e);
-      if(arxivDoi){
+      if(arxivDoi && !preprintDoiBlockedByVenue(e,arxivDoi)){
         add("warn","arXiv URL/preprint can use canonical DOI",arxivDoi,
           [{label:`Add DOI ${arxivDoi}`,kind:"setField",field:"doi",value:arxivDoi,auto:true}]);
       }
@@ -585,6 +585,7 @@ function sortEntries(entries){
 }
 // "modified" = the user edited / autofixed / added this entry (beyond auto-formatting).
 function isChanged(e){ return !!e._dirty; }
+function refreshEntrySource(e){ e._src=serializeEntry(e,false); }
 function visibleErrCount(e){ return e._resolved ? 0 : e.errCount; }
 function visibleWarnCount(e){ return e._resolved ? 0 : e.warnCount; }
 function exportBib(){
@@ -931,6 +932,10 @@ function isPreprintDoi(doi){
 function isPreprintVenue(s){
   return /arxiv|preprint|biorxiv|bioarxiv|medrxiv|openrxiv|ssrn|research\s*square/i.test(String(s||""));
 }
+function preprintDoiBlockedByVenue(e,doi){
+  const venue=entryVenue(e);
+  return !!(isPreprintDoi(doi) && venue && !isPreprintVenue(venue));
+}
 /* return several candidates so we can pick a *published* (non-preprint) one */
 async function crossrefCandidates(title){
   return SOURCES.crossref.candidatesByTitle(title);
@@ -1015,6 +1020,9 @@ function authorInitials(raw){
   const s=String(raw||"").replace(/[{}]/g," ").replace(/\s+/g," ").trim();
   if(!s) return "";
   const compact=s.replace(/[^A-Za-z]/g,"");
+  const initialTokens=s.match(/[A-Za-z](?=\s*\.|\s*-)/g);
+  if(initialTokens && initialTokens.length>=2 && initialTokens.join("").length===compact.length)
+    return initialTokens.join("").toLowerCase();
   if(compact && compact.length<=4 && /^[A-Z]+$/i.test(compact) && (/[.\s]/.test(s) || /^[A-Z]{1,4}$/.test(compact))){
     return compact.toLowerCase();
   }
@@ -1119,6 +1127,8 @@ function titleAuthorMismatch(e,r){
 }
 function doiSuggestionConfidence(e,r,title){
   if(!r || !r.doi) return {ok:false, reason:""};
+  if(preprintDoiBlockedByVenue(e,r.doi))
+    return {ok:false, reason:`proposed DOI is a preprint DOI but venue is "${entryVenue(e)}"`};
   if(r._lookup==="doi") return {ok:true, reason:""};
   const sim=title&&r.title?titleSimilarity(title,r.title):{score:0, passes:()=>false};
   if(!sim.passes(0.75)) return {ok:false, reason:`title-only match is weak (${(sim.score*100|0)}%)`};
@@ -1180,7 +1190,7 @@ function addVerifyFix(out,field,value,label){
 }
 function safeRecordForFixes(e,r,title){
   if(!r) return false;
-  if(title && r.title && !titleSimilarity(title,r.title).passes(CONFIG.verification.titleSimThreshold)) return false;
+  if(title && r.title && !titleSimilarity(title,r.title).passes(Math.max(0.75,CONFIG.verification.titleSimThreshold))) return false;
   const efAuthor=normAuthorLast(entryFirstAuthorLast(e));
   if(r.firstAuthor && efAuthor && !authorLastMatches(efAuthor,normAuthorLast(r.firstAuthor))) return false;
   const authorList=authorListCompare(e,r);
@@ -1645,7 +1655,7 @@ function autoFixTooltip(entries){
       else if(/Unexpected field/i.test(msg)) addType("known field-name typos");
       else if(/Year is not a 4-digit number/i.test(msg)) addType("year formatting");
       else if(/Use year instead of date field|date .* disagree|Redundant date field/i.test(msg)) addType("date → year");
-      else if(/Page range uses single dash/i.test(msg)) addType("page-range dashes");
+      else if(/Page range (uses single dash|should use BibTeX double dash)/i.test(msg)) addType("page-range dashes");
       else if(/DOI should be bare/i.test(msg)) addType("DOI URL/prefix cleanup");
       else if(/Month must be an integer/i.test(msg)) addType("month names/abbreviations");
       else if(/title is not brace-protected/i.test(msg)) addType("protected title words");
@@ -1803,6 +1813,7 @@ function applyFix(e,act){
   const oldKey=e.key.toLowerCase();
   if(mutateEntry(e,act)){
     e._dirty=true;
+    refreshEntrySource(e);
     // Keep the verification record but drop only what this edit resolved, so
     // accepting one suggested fix no longer discards the entry's other fixes.
     if(e._verify) pruneResolvedVerify(e,e._verify);
@@ -1821,7 +1832,7 @@ function autoFixEntry(e){
   const verifyActs=autoVerifyFixes(e);
   for(const is of e.issues) for(const a of (is.actions||[])) if(a.auto && mutateEntry(e,a)){ n++; }
   for(const a of verifyActs) if(mutateEntry(e,a)){ n++; }
-  if(n){ e._dirty=true; if(e._verify) pruneResolvedVerify(e,e._verify); }
+  if(n){ e._dirty=true; refreshEntrySource(e); if(e._verify) pruneResolvedVerify(e,e._verify); }
   lintAll(ENTRIES); render(); toast(n?`Auto-fixed ${n} issue${n>1?"s":""}`:"Nothing to auto-fix");
 }
 function autoFixAll(){
@@ -1830,7 +1841,7 @@ function autoFixAll(){
     const verifyActs=autoVerifyFixes(e);
     for(const is of e.issues) for(const a of (is.actions||[])) if(a.auto && mutateEntry(e,a)){ c++; }
     for(const a of verifyActs) if(mutateEntry(e,a)){ c++; }
-    if(c){ e._dirty=true; if(e._verify) pruneResolvedVerify(e,e._verify); n+=c; ents++; }
+    if(c){ e._dirty=true; refreshEntrySource(e); if(e._verify) pruneResolvedVerify(e,e._verify); n+=c; ents++; }
   }
   lintAll(ENTRIES); render();
   toast(n?`Auto-fixed ${n} issue${n>1?"s":""} across ${ents} entr${ents>1?"ies":"y"}`:"Nothing to auto-fix");
