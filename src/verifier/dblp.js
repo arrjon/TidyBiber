@@ -13,6 +13,7 @@ async function byTitle(title){
   if(au){ const first=Array.isArray(au)?au[0]:au; fa=(first&&(first.text||first))||""; }
   return { title:(hit.title||"").replace(/\.$/,""), year:hit.year?String(hit.year):"",
     doi:hit.doi||"", firstAuthor:String(fa).split(/\s+/).pop()||"", authors:authors.join("; "),
-    journal:hit.venue||"", pages:hit.pages||"", publisher:hit.publisher||"", source:"DBLP",
+    journal:hit.venue||"", pages:hit.pages||"", volume:hit.volume||"", number:hit.number||"",
+    publisher:hit.publisher||"", source:"DBLP",
     url:hit.ee||hit.url||"" };
 }

@@ -288,9 +288,9 @@ function lintAll(entries){
     }
     // pages
     if(ch.requirePageRangeDash && e.fields.pages){
-      const p=e.fields.pages.trim();
-      if(/^\d+\s*-\s*\d+$/.test(p) && !p.includes("--")){
-        const fixed=p.replace(/^(\d+)\s*-\s*(\d+)$/,"$1--$2");
+      const p=cleanField(e.fields.pages);
+      const fixed=canonicalPages(p);
+      if(fixed!==p){
         add("warn","Page range uses single dash; should be 12--34",fixed,
           [{label:`Fix → ${fixed}`,kind:"setField",field:"pages",value:fixed,auto:true}]);
       }
@@ -301,6 +301,13 @@ function lintAll(entries){
         const bare=normDoi(e.fields.doi);
         add("warn","DOI should be bare (10.xxxx/...)",bare,
           [{label:"Fix → bare DOI",kind:"setField",field:"doi",value:bare,auto:true}]);
+      }
+    }
+    if(ch.doiFormat && !e.fields.doi){
+      const arxivDoi=arxivDoiFor(e);
+      if(arxivDoi){
+        add("warn","arXiv URL/preprint can use canonical DOI",arxivDoi,
+          [{label:`Add DOI ${arxivDoi}`,kind:"setField",field:"doi",value:arxivDoi,auto:true}]);
       }
     }
     // month
@@ -378,6 +385,10 @@ function isProceedingsEventTitleAlias(e,f){
 function arxivPreprintJournal(e){
   const id=arxivId(e);
   return id ? `arXiv preprint arXiv:${id}` : "";
+}
+function arxivDoiFor(e){
+  const id=arxivId(e);
+  return id ? `10.48550/arxiv.${id.replace(/v\d+$/i,"").toLowerCase()}` : "";
 }
 function escapeRe(s){return s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");}
 function normDoi(d){
@@ -535,7 +546,7 @@ function serializeEntry(e,useFixedKey,overrideKey){
     }
     if(fn==="doi" && CONFIG.checks.doiFormat) v=normDoi(v);
     if(fn==="pages" && CONFIG.checks.requirePageRangeDash)
-      v=v.replace(/^(\d+)\s*-\s*(\d+)$/,"$1--$2");
+      v=canonicalPages(v);
     const name=F.lowercaseFieldNames?fn.toLowerCase():fn;
     const namePadded=F.alignEquals?name.padEnd(pad):name;
     const comma=(idx<names.length-1||F.trailingComma)?",":"";
@@ -754,17 +765,21 @@ function importedVerifyNoteResolved(e,v,note){
   m=n.match(/^Missing title; found "(.+)"$/);
   if(m){ const ct=cleanField(e.fields.title); return !!ct && titleSimilarity(ct,m[1]).passes(CONFIG.verification.titleSimThreshold); }
   m=n.match(/^Missing pages; found .*=(.+)$/);
-  if(m) return e.fields.pages && !pagesDiffer(cleanField(e.fields.pages),m[1]);
+  if(m) return e.fields.pages && !pagesDiffer(canonicalPages(e.fields.pages),canonicalPages(m[1]));
   m=n.match(/^Missing publisher; found .*="(.+)"$/);
   if(m) return !!cleanField(e.fields.publisher);   // resolved once a publisher is present
+  m=n.match(/^Missing (volume|number|issue|month|articleno); found .*=(.+)$/);
+  if(m) return cleanField(e.fields[m[1]])===cleanField(m[2]);
   m=n.match(/^Pages: file=.* vs .*=([^\s].*)$/);
-  if(m) return e.fields.pages && !pagesDiffer(cleanField(e.fields.pages),m[1]);
+  if(m) return e.fields.pages && !pagesDiffer(canonicalPages(e.fields.pages),canonicalPages(m[1]));
   m=n.match(/^Missing DOI; found (.+)$/);
   if(m) return curDoi && curDoi===normDoi(m[1]);
   m=n.match(/^DOI differs: file=.* vs found=(.+)$/);
   if(m) return curDoi && curDoi===normDoi(m[1]);
   m=n.match(/^Published version found: ([^\s(]+)/);
   if(m) return curDoi && curDoi===normDoi(m[1]);
+  m=n.match(/^DOI is a preprint DOI \(([^)]+)\)/);
+  if(m) return !curDoi || curDoi!==normDoi(m[1]) || isPreprintVenue(entryVenue(e));
   m=n.match(/^URL .*: (.+)$/);
   if(m) return cleanField(e.fields.url)!==m[1].trim();
   if(/^Low title similarity/i.test(n) && v.matchedTitle)
@@ -773,6 +788,8 @@ function importedVerifyNoteResolved(e,v,note){
   if(m) return authorLastMatches(normAuthorLast(entryFirstAuthorLast(e)),normAuthorLast(m[1]));
   m=n.match(/^Missing author; found (.+)$/);
   if(m) return !!cleanField(e.fields.author) && !bibAuthorsDiffer(e.fields.author,m[1]);
+  if(/^Author names abbreviated; .* has fuller names:/.test(n) && v.matchedAuthors!=null)
+    return !!cleanField(e.fields.author) && !bibAuthorsDiffer(e.fields.author,dbAuthorsToBib({authors:v.matchedAuthors,source:v.source}));
   if(/^Author list (overlap low|first-name conflict)/.test(n) && v.matchedAuthors!=null){
     const cmp=authorListCompare(e,{authors:v.matchedAuthors});
     return !!(cmp && cmp.ok);
@@ -789,7 +806,7 @@ function importedFixResolved(e,f){
   const cur=cleanField(e.fields[f.field]);
   const val=cleanField(f.value);
   if(f.field==="doi") return cur && normDoi(cur)===normDoi(val);
-  if(f.field==="pages") return cur && !pagesDiffer(cur,val);
+  if(f.field==="pages") return cur && !pagesDiffer(canonicalPages(cur),canonicalPages(val));
   if(["journal","journaltitle","booktitle"].includes(f.field))
     // Resolved when they match AND the file isn't still the abbreviation of a spelled-out
     // target — otherwise an unapplied "Expand" fix would look already-satisfied.
@@ -848,7 +865,8 @@ function indentBlock(s,n){const pad=" ".repeat(n);return String(s||"").split("\n
 /* ---------- 7. ONLINE VERIFIER (multi-database) ------------ */
 /* Each source returns a normalized record, or null. All of these send
    Access-Control-Allow-Origin:* so they work from a sandboxed page.
-   Normalized record: {title, year, doi, firstAuthor, authors, source, url}. */
+   Normalized record: {title, year, doi, firstAuthor, authors, source, url,
+   plus optional metadata such as volume, number, month, articleno}. */
 
 function normalizeSourceOrder(order,enabled){
   const defaults=DEFAULT_CONFIG.verification.sourceOrder||Object.keys(SOURCES);
@@ -900,9 +918,18 @@ function cleanArxivId(id){
   return String(id||"").replace(/[{}]/g,"").replace(/\.pdf$/i,"").replace(/[?#].*$/,"").replace(/[),.;:]+$/,"");
 }
 function isPreprint(e){
+  const f=e.fields;
+  const preprintText=(f.archiveprefix||"")+(f.howpublished||"")+(f.note||"")+(f.journal||"")+(f.url||"");
   return !!arxivId(e) ||
-    /arxiv|preprint|biorxiv|medrxiv|ssrn/i.test((e.fields.archiveprefix||"")+(e.fields.howpublished||"")+(e.fields.note||"")+(e.fields.journal||"")) ||
-    (e.fields.doi&&/10\.48550\/arxiv/i.test(e.fields.doi));
+    /arxiv|preprint|biorxiv|bioarxiv|medrxiv|openrxiv|ssrn|research\s*square/i.test(preprintText) ||
+    (e.fields.doi&&isPreprintDoi(e.fields.doi));
+}
+function isPreprintDoi(doi){
+  const d=normDoi(doi);
+  return /10\.48550\/arxiv|10\.1101\/|10\.64898\/|10\.21203\/rs\.|10\.2139\/ssrn/i.test(d);
+}
+function isPreprintVenue(s){
+  return /arxiv|preprint|biorxiv|bioarxiv|medrxiv|openrxiv|ssrn|research\s*square/i.test(String(s||""));
 }
 /* return several candidates so we can pick a *published* (non-preprint) one */
 async function crossrefCandidates(title){
@@ -913,9 +940,37 @@ async function openalexCandidates(title){
 }
 function isPublishedCandidate(c){
   if(!c.doi) return false;
-  if(/10\.48550\/arxiv/i.test(c.doi)) return false;        // that's the preprint DOI
+  if(isPreprintDoi(c.doi)) return false;                    // that's the preprint DOI
   if(/preprint|posted-content/i.test(c.type)) return false; // explicitly a preprint
   return true;
+}
+function publishedAuthorMatch(e,c){
+  const fileAuthors=authorPartsFromBib(e.fields.author||e.fields.editor||"");
+  if(!fileAuthors.length) return true;
+
+  const entryFirst=normAuthorLast(entryFirstAuthorLast(e));
+  const candidateFirst=normAuthorLast(c.firstAuthor);
+  if(entryFirst && candidateFirst && !authorLastMatches(entryFirst,candidateFirst)){
+    return false;
+  }
+
+  const authorList=authorListCompare(e,c);
+  if(authorList) return authorList.ok;
+
+  // If the source only gives a first author, accept that as the minimum
+  // identity evidence; otherwise title-only preprint upgrades are too risky.
+  return !!(entryFirst && candidateFirst);
+}
+function publishedTitleMatch(original,candidate){
+  const sim=titleSimilarity(original,candidate||"");
+  if(!sim.passes(Math.max(0.75,CONFIG.verification.titleSimThreshold))) return false;
+  const A=titleTokens(original), B=titleTokens(candidate);
+  const shared=A.filter(w=>B.includes(w)).length;
+  const short=Math.min(A.length,B.length);
+  const long=Math.max(A.length,B.length);
+  // Published titles often gain/drop a subtitle, but they should not merely
+  // share a generic phrase like "sequential ... likelihood-free inference".
+  return short<4 ? sim.score>=0.9 : shared/short>=0.8 && shared/long>=0.85;
 }
 async function findPublishedVersion(e,title){
   if(!title) return null;
@@ -924,7 +979,8 @@ async function findPublishedVersion(e,title){
   try{ cands=cands.concat(await openalexCandidates(title)); }catch(err){}
   const hits=cands.filter(isPublishedCandidate)
     .map(c=>({...c, sim:titleSimilarity(title,c.title||"").score}))
-    .filter(c=>titleSimilarity(title,c.title||"").passes(Math.max(0.6,CONFIG.verification.titleSimThreshold)))
+    .filter(c=>publishedTitleMatch(title,c.title||""))
+    .filter(c=>publishedAuthorMatch(e,c))
     .sort((a,b)=>b.sim-a.sim);
   return hits[0]||null;
 }
@@ -949,7 +1005,24 @@ function authorLastMatches(a,b){
 function authorFirstMatches(a,b){
   if(!a.first || !b.first) return true;
   if(a.first===b.first) return true;
+  if(a.initials && b.initials){
+    const [short,long]=a.initials.length<=b.initials.length?[a.initials,b.initials]:[b.initials,a.initials];
+    return short.length===1 ? short[0]===long[0] : long.startsWith(short);
+  }
   return (a.firstInitial || b.firstInitial) && a.first[0]===b.first[0];
+}
+function authorInitials(raw){
+  const s=String(raw||"").replace(/[{}]/g," ").replace(/\s+/g," ").trim();
+  if(!s) return "";
+  const compact=s.replace(/[^A-Za-z]/g,"");
+  if(compact && compact.length<=4 && /^[A-Z]+$/i.test(compact) && (/[.\s]/.test(s) || /^[A-Z]{1,4}$/.test(compact))){
+    return compact.toLowerCase();
+  }
+  return s.split(/[\s.-]+/)
+    .map(part=>part.replace(/[^A-Za-z]/g,""))
+    .filter(Boolean)
+    .map(part=>part[0].toLowerCase())
+    .join("");
 }
 function authorPartsFromName(raw){
   const s=String(raw||"").trim().replace(/[{}]/g,"");
@@ -957,19 +1030,21 @@ function authorPartsFromName(raw){
   let last="", first="", firstRaw="";
   if(s.includes(",")){
     const parts=s.split(",");
-    last=parts[0]; firstRaw=parts.slice(1).join(" ").trim().split(/\s+/)[0]||""; first=firstRaw;
+    last=parts[0]; firstRaw=parts.slice(1).join(" ").trim(); first=firstRaw.split(/\s+/)[0]||"";
   }else{
     const parts=s.split(/\s+/).filter(Boolean);
     const tail=parts[parts.length-1]||"";
-    if(parts.length>=2 && /^[A-Z]{1,4}\.?$/.test(tail)){
+    if(parts.length>=2 && /^[A-Z](?:\.?[A-Z]){0,3}\.?$/i.test(tail) && (/[.]/.test(tail) || /^[A-Z]{1,4}$/.test(tail))){
       last=parts[0]; firstRaw=tail; first=tail;
     }else{
-      last=tail; firstRaw=parts[0]||""; first=firstRaw;
+      last=tail; firstRaw=parts.slice(0,-1).join(" "); first=parts[0]||"";
     }
   }
-  const firstInitial=/^[A-Z]{1,4}\.?$/.test(firstRaw) || /^[A-Za-z]\.?$/.test(firstRaw);
+  const initials=authorInitials(firstRaw);
+  const compactFirst=String(firstRaw||"").replace(/[^A-Za-z]/g,"");
+  const firstInitial=!!(compactFirst && compactFirst.length<=4 && /^[A-Z]+$/i.test(compactFirst) && (/[.\s]/.test(firstRaw) || /^[A-Z]{1,4}$/.test(compactFirst)));
   last=normAuthorLast(last); first=normAuthorFirst(first);
-  return last?{last,first,firstInitial}:null;
+  return last?{last,first,firstInitial,initials,display:s}:null;
 }
 function authorPartsFromBib(raw){
   return String(raw||"").split(/\s+and\s+/i).map(authorPartsFromName).filter(Boolean);
@@ -982,11 +1057,55 @@ function authorListCompare(e,r){
   const db=authorPartsFromList(r.authors||"");
   if(!file.length || !db.length) return null;
   const matched=file.filter(a=>db.some(b=>authorLastMatches(a.last,b.last) && authorFirstMatches(a,b))).length;
-  const surnameOnly=file.filter(a=>db.some(b=>authorLastMatches(a.last,b.last))).length;
-  const firstNameConflicts=Math.max(0,surnameOnly-matched);
+  const conflicts=file.map(a=>{
+    const sameLast=db.filter(b=>authorLastMatches(a.last,b.last));
+    if(!sameLast.length || sameLast.some(b=>authorFirstMatches(a,b))) return null;
+    return {file:a.display, db:sameLast.map(b=>b.display).join(" / ")};
+  }).filter(Boolean);
+  const firstNameConflicts=conflicts.length;
+  const unmatchedFile=file.filter(a=>!db.some(b=>authorLastMatches(a.last,b.last) && authorFirstMatches(a,b))).map(a=>a.display);
+  const unmatchedDb=db.filter(b=>!file.some(a=>authorLastMatches(a.last,b.last) && authorFirstMatches(a,b))).map(b=>b.display);
   const denom=Math.min(file.length,db.length);
   const ratio=denom?matched/denom:0;
-  return {file:file.map(a=>a.last),db:db.map(a=>a.last),matched,firstNameConflicts,ratio,ok:matched>0 && firstNameConflicts===0 && (ratio>=0.5 || matched>=2)};
+  return {
+    file:file.map(a=>a.last), db:db.map(a=>a.last), matched,
+    firstNameConflicts, conflicts, unmatchedFile, unmatchedDb, ratio,
+    ok:matched>0 && firstNameConflicts===0 && (ratio>=0.5 || matched>=2)
+  };
+}
+function authorExpansionCandidates(e,r){
+  const file=authorPartsFromBib(e.fields.author||e.fields.editor||"");
+  const db=authorPartsFromList(r.authors||"");
+  if(!file.length || !db.length) return [];
+  return file.map(a=>{
+    const b=db.find(x=>authorLastMatches(a.last,x.last) && authorFirstMatches(a,x));
+    if(!b) return null;
+    const fileIsInitial=!!a.firstInitial || /^[a-z](?:-?[a-z]){0,3}$/.test(a.first);
+    const dbLooksFull=!b.firstInitial && b.first && b.first.length>1;
+    return fileIsInitial && dbLooksFull && a.first!==b.first ? {file:a.display, db:b.display} : null;
+  }).filter(Boolean);
+}
+function authorExpansionNote(expansions,source){
+  const shown=expansions.slice(0,3)
+    .map(x=>`file="${x.file}" vs ${source}="${x.db}"`).join("; ");
+  const more=expansions.length>3?`; +${expansions.length-3} more`:"";
+  return `Author names abbreviated; ${source} has fuller names: ${shown}${more}`;
+}
+function authorListIssueNote(authorList,source){
+  if(authorList.firstNameConflicts){
+    const shown=authorList.conflicts.slice(0,3)
+      .map(c=>`file="${c.file}" vs ${source}="${c.db}"`).join("; ");
+    const more=authorList.conflicts.length>3?`; +${authorList.conflicts.length-3} more`:"";
+    return `Author list first-name conflict vs ${source}: ${shown}${more}`;
+  }
+  const denom=Math.min(authorList.file.length,authorList.db.length);
+  const missing=authorList.unmatchedFile.slice(0,3).map(n=>`"${n}"`).join(", ");
+  const extra=authorList.unmatchedDb.slice(0,3).map(n=>`"${n}"`).join(", ");
+  const detail=[
+    missing?`unmatched in file: ${missing}`:"",
+    extra?`unmatched in ${source}: ${extra}`:""
+  ].filter(Boolean).join("; ");
+  return `Author list overlap low vs ${source}: matched ${authorList.matched}/${denom} authors${detail?`; ${detail}`:""}`;
 }
 function entryFirstAuthorLast(e){
   const raw=e.fields.author||e.fields.editor||"";
@@ -1042,6 +1161,85 @@ function authorFixLabel(verb,authors){
   const list=authors.split(/\s+and\s+/i);
   const preview=list.length>2?`${list[0]} et al. (${list.length} authors)`:authors;
   return `${verb} → ${preview}`;
+}
+function optionalLookupFields(e,r){
+  const specs=[
+    {field:"volume", value:r.volume},
+    {field:(e.fields.issue!=null && e.fields.number==null)?"issue":"number", value:r.number||r.issue, present:["number","issue"]},
+    {field:"month", value:r.month},
+    {field:"articleno", value:r.articleno}
+  ];
+  return specs.map(spec=>({
+    field:spec.field,
+    value:cleanField(spec.value),
+    present:spec.present||[spec.field]
+  })).filter(spec=>spec.value && !spec.present.some(f=>cleanField(e.fields[f])));
+}
+function addVerifyFix(out,field,value,label){
+  if(value && !out.fixes.some(f=>f.field===field)) out.fixes.push({field,value:String(value),label});
+}
+function safeRecordForFixes(e,r,title){
+  if(!r) return false;
+  if(title && r.title && !titleSimilarity(title,r.title).passes(CONFIG.verification.titleSimThreshold)) return false;
+  const efAuthor=normAuthorLast(entryFirstAuthorLast(e));
+  if(r.firstAuthor && efAuthor && !authorLastMatches(efAuthor,normAuthorLast(r.firstAuthor))) return false;
+  const authorList=authorListCompare(e,r);
+  if(authorList && !authorList.ok) return false;
+  return true;
+}
+function addPublishedRecordFixes(e,out,r){
+  if(!safeRecordForFixes(e,r,cleanField(e.fields.title))) return;
+  const jfield=venueFieldFor(e);
+  const efYear=(e.fields.year||"").replace(/\D/g,"");
+  const efJournal=entryVenue(e);
+  const efPages=cleanField(e.fields.pages);
+  const efPublisher=cleanField(e.fields.publisher);
+  const source="Published version";
+  const PUB_TYPES=["article","inproceedings","conference","incollection","inbook"];
+  const venueExpected=e.fields.journal!=null||e.fields.journaltitle!=null||e.fields.booktitle!=null||PUB_TYPES.includes(e.type);
+  const pagesExpected=e.fields.pages!=null||PUB_TYPES.includes(e.type);
+  const publisherExpected=e.fields.publisher!=null||["book","incollection","inbook"].includes(e.type);
+
+  if(r.year && efYear && r.year!==efYear){
+    out.notes.push(`Year: file=${efYear} vs ${source}=${r.year} — journal-edition and online-first years can differ; use the edition year`);
+    addVerifyFix(out,"year",r.year,`Set year → ${r.year}`);
+  }else if(r.year && !efYear && !e.fields.year && !e.fields.date){
+    out.notes.push(`Missing year; found ${source}=${r.year}`);
+    addVerifyFix(out,"year",r.year,`Add year ${r.year}`);
+  }
+  if(r.journal && venueExpected){
+    const dbJournal=cleanField(r.journal);
+    if(!efJournal){
+      out.notes.push(`Missing ${jfield}; found ${source}="${dbJournal}"`);
+      addVerifyFix(out,jfield,dbJournal,`Add ${jfield} → ${dbJournal}`);
+    }else if(!journalMatch(efJournal,dbJournal) || isPreprintVenue(efJournal)){
+      out.notes.push(`Journal/venue: file="${efJournal}" vs ${source}="${dbJournal}"`);
+      addVerifyFix(out,jfield,dbJournal,`Set ${jfield} → ${dbJournal}`);
+    }else if(journalLooksAbbreviated(efJournal) && !journalLooksAbbreviated(dbJournal)
+             && dbJournal.length>efJournal.length && dbJournal.toLowerCase()!==efJournal.toLowerCase()){
+      out.notes.push(`Journal abbreviated: file="${efJournal}" vs full name "${dbJournal}"`);
+      addVerifyFix(out,jfield,dbJournal,`Expand ${jfield} → ${dbJournal}`);
+    }
+  }
+  if(r.pages && pagesExpected){
+    const dbPages=canonicalPages(r.pages);
+    if(!efPages){
+      out.notes.push(`Missing pages; found ${source}=${dbPages}`);
+      addVerifyFix(out,"pages",dbPages,`Add pages ${dbPages}`);
+    }else if(pagesDiffer(efPages,dbPages)){
+      out.notes.push(`Pages: file=${canonicalPages(efPages)} vs ${source}=${dbPages}`);
+      addVerifyFix(out,"pages",dbPages,`Set pages → ${dbPages}`);
+    }
+  }
+  if(r.publisher && !efPublisher && publisherExpected){
+    const dbPublisher=cleanField(r.publisher);
+    out.notes.push(`Missing publisher; found ${source}="${dbPublisher}"`);
+    addVerifyFix(out,"publisher",dbPublisher,`Add publisher → ${dbPublisher}`);
+  }
+  for(const opt of optionalLookupFields(e,r)){
+    out.notes.push(`Missing ${opt.field}; found ${source}=${opt.value}`);
+    addVerifyFix(out,opt.field,opt.value,`Add ${opt.field} ${opt.value}`);
+  }
 }
 
 async function verifyEntry(e){
@@ -1099,6 +1297,7 @@ async function verifyEntry(e){
   out.matchedTitle=primary.title; out.matchedDoi=primary.doi; out.matchedUrl=primary.url;
   out.matchedAuthors=primary.authors||"";
   if(primary.doi) out.doiPreview=doiPreviewRecord(primary);
+  const primarySafeFixes=safeRecordForFixes({fields:{...e.fields, title}},primary,title);
 
   const efYear=(e.fields.year||"").replace(/\D/g,"");
   const efAuthor=normAuthorLast(entryFirstAuthorLast(e));
@@ -1115,25 +1314,31 @@ async function verifyEntry(e){
   // Publisher is only required for these types; don't push it onto articles.
   const publisherExpected=e.fields.publisher!=null||["book","incollection","inbook"].includes(e.type);
   // record a one-click fix (first source to suggest a given field wins)
-  const addFix=(field,value,label)=>{ if(value && !out.fixes.some(f=>f.field===field)) out.fixes.push({field,value:String(value),label}); };
+  const addFix=(field,value,label)=>addVerifyFix(out,field,value,label);
+  const preprintDoiForPublishedVenue=!!(doi && isPreprintDoi(doi) && efJournal && !isPreprintVenue(efJournal));
 
   // Aggregate cross-source signals.
   for(const r of recs){
+    const sourceIsPreprintRecord=!!(preprintDoiForPublishedVenue && (isPreprintDoi(r.doi||doi) || isPreprintVenue(r.journal)));
+    const safeFixes=safeRecordForFixes(e,r,title) && !sourceIsPreprintRecord;
     if(r.year && efYear && r.year!==efYear){
       out.notes.push(`Year: file=${efYear} vs ${r.source}=${r.year} — journal-edition and online-first years can differ; use the edition year`);
-      addFix("year",r.year,`Set year → ${r.year}`);
+      if(safeFixes) addFix("year",r.year,`Set year → ${r.year}`);
     }else if(r.year && !efYear && !e.fields.year && !e.fields.date){
       // No year anywhere (and no date to derive one from locally) — propose the lookup's.
       out.notes.push(`Missing year; found ${r.source}=${r.year}`);
-      addFix("year",r.year,`Add year ${r.year}`);
+      if(safeFixes) addFix("year",r.year,`Add year ${r.year}`);
     }
     if(r.firstAuthor && efAuthor && !authorLastMatches(efAuthor,normAuthorLast(r.firstAuthor)))
       out.notes.push(`First author: file=${efAuthor} vs ${r.source}=${normAuthorLast(r.firstAuthor)}`);
     const authorList=authorListCompare(e,r);
-    if(authorList && !authorList.ok)
-      out.notes.push(authorList.firstNameConflicts?
-        `Author list first-name conflict vs ${r.source}: ${authorList.firstNameConflicts} surname match${authorList.firstNameConflicts===1?"":"es"} with different first names`:
-        `Author list overlap low vs ${r.source}: ${authorList.matched}/${Math.min(authorList.file.length,authorList.db.length)} authors`);
+    if(authorList && !authorList.ok){
+      out.notes.push(authorListIssueNote(authorList,r.source));
+      const dbAuthors=dbAuthorsToBib(r);
+      const fileAuthors=cleanField(e.fields.author);
+      if(safeFixes && !e.fields.editor && dbAuthors && (!fileAuthors || bibAuthorsDiffer(fileAuthors,dbAuthors)))
+        addFix("author",dbAuthors,authorFixLabel(fileAuthors?"Set authors":"Add authors",dbAuthors));
+    }
     if(r.title && title){
       const sim=titleSimilarity(title,r.title);
       if(!sim.passes(V.titleSimThreshold)) out.notes.push(`Low title similarity vs ${r.source} (${(sim.score*100|0)}%${sim.reason?`, ${sim.reason}`:""}) — possible mismatch/fabrication`);
@@ -1143,34 +1348,40 @@ async function verifyEntry(e){
       if(!efJournal){
         if(venueExpected){
           out.notes.push(`Missing ${jfield}; found ${r.source}="${dbJournal}"`);
-          addFix(jfield,dbJournal,`Add ${jfield} → ${dbJournal}`);
+          if(safeFixes) addFix(jfield,dbJournal,`Add ${jfield} → ${dbJournal}`);
         }
       }else if(!journalMatch(efJournal,dbJournal)){
         out.notes.push(`Journal/venue: file="${efJournal}" vs ${r.source}="${dbJournal}"`);
-        addFix(jfield,dbJournal,`Set ${jfield} → ${dbJournal}`);
+        if(safeFixes) addFix(jfield,dbJournal,`Set ${jfield} → ${dbJournal}`);
       }else if(journalLooksAbbreviated(efJournal) && !journalLooksAbbreviated(dbJournal)
                && dbJournal.length>efJournal.length && dbJournal.toLowerCase()!==efJournal.toLowerCase()){
         // Same journal, but the file uses an abbreviation and the lookup spells it out.
         out.notes.push(`Journal abbreviated: file="${efJournal}" vs full name "${dbJournal}"`);
-        addFix(jfield,dbJournal,`Expand ${jfield} → ${dbJournal}`);
+        if(safeFixes) addFix(jfield,dbJournal,`Expand ${jfield} → ${dbJournal}`);
       }
     }
     if(r.pages){
-      const dbPages=cleanField(r.pages);
+      const dbPages=canonicalPages(r.pages);
       if(!efPages){
         if(pagesExpected){
           out.notes.push(`Missing pages; found ${r.source}=${dbPages}`);
-          addFix("pages",dbPages,`Add pages ${dbPages}`);
+          if(safeFixes) addFix("pages",dbPages,`Add pages ${dbPages}`);
         }
-      }else if(pagesDiffer(efPages,r.pages)){
-        out.notes.push(`Pages: file=${efPages} vs ${r.source}=${r.pages}`);
-        addFix("pages",r.pages,`Set pages → ${r.pages}`);
+      }else if(pagesDiffer(efPages,dbPages)){
+        out.notes.push(`Pages: file=${canonicalPages(efPages)} vs ${r.source}=${dbPages}`);
+        if(safeFixes) addFix("pages",dbPages,`Set pages → ${dbPages}`);
       }
     }
     if(r.publisher && !efPublisher && publisherExpected){
       const dbPublisher=cleanField(r.publisher);
       out.notes.push(`Missing publisher; found ${r.source}="${dbPublisher}"`);
-      addFix("publisher",dbPublisher,`Add publisher → ${dbPublisher}`);
+      if(safeFixes) addFix("publisher",dbPublisher,`Add publisher → ${dbPublisher}`);
+    }
+    if(safeFixes){
+      for(const opt of optionalLookupFields(e,r)){
+        out.notes.push(`Missing ${opt.field}; found ${r.source}=${opt.value}`);
+        addFix(opt.field,opt.value,`Add ${opt.field} ${opt.value}`);
+      }
     }
   }
   // Missing title — fillable only when a DOI lookup returned one (a title-less
@@ -1178,7 +1389,7 @@ async function verifyEntry(e){
   if(primary.title && !efTitle){
     const t=cleanField(primary.title);
     out.notes.push(`Missing title; found "${t}"`);
-    addFix("title",t,`Add title → ${t.length>60?t.slice(0,57)+"…":t}`);
+    if(primarySafeFixes) addFix("title",t,`Add title → ${t.length>60?t.slice(0,57)+"…":t}`);
   }
   // Author-list fix — offer the database's canonical author list when the file's
   // authors disagree with it. Skip editor-only entries (books/proceedings) so we
@@ -1189,13 +1400,18 @@ async function verifyEntry(e){
     if(dbAuthors){
       if(!fileAuthors){
         out.notes.push(`Missing author; found ${dbAuthors}`);
-        addFix("author",dbAuthors,authorFixLabel("Add authors",dbAuthors));
+        if(primarySafeFixes) addFix("author",dbAuthors,authorFixLabel("Add authors",dbAuthors));
       }else{
         const authorList=authorListCompare(e,primary);
         const firstMismatch=primary.firstAuthor && efAuthor && !authorLastMatches(efAuthor,normAuthorLast(primary.firstAuthor));
         const listMismatch=!!(authorList && !authorList.ok);
-        if((firstMismatch||listMismatch) && bibAuthorsDiffer(fileAuthors,dbAuthors))
+        const expansions=authorList && authorList.ok ? authorExpansionCandidates(e,primary) : [];
+        if(primarySafeFixes && (firstMismatch||listMismatch) && bibAuthorsDiffer(fileAuthors,dbAuthors))
           addFix("author",dbAuthors,authorFixLabel("Set authors",dbAuthors));
+        else if(primarySafeFixes && expansions.length && bibAuthorsDiffer(fileAuthors,dbAuthors)){
+          out.notes.push(authorExpansionNote(expansions,primary.source));
+          addFix("author",dbAuthors,authorFixLabel("Expand authors",dbAuthors));
+        }
       }
     }
   }
@@ -1205,11 +1421,11 @@ async function verifyEntry(e){
   const doiConfidence=doiSuggestionConfidence(e,doiRec,title);
   if(doiRec) out.doiPreview=doiPreviewRecord(doiRec);
   if(suggestDoi && !doi){
-    if(doiConfidence.ok){ out.notes.push(`Missing DOI; found ${suggestDoi}`); addFix("doi",normDoi(suggestDoi),`Add DOI ${normDoi(suggestDoi)}`); }
+    if(primarySafeFixes && doiConfidence.ok){ out.notes.push(`Missing DOI; found ${suggestDoi}`); addFix("doi",normDoi(suggestDoi),`Add DOI ${normDoi(suggestDoi)}`); }
     else out.notes.push(`Possible DOI found but not suggested: ${suggestDoi} (${doiConfidence.reason}).`);
   }
   if(doi && suggestDoi && normDoi(suggestDoi)!==doi){
-    if(doiConfidence.ok){ out.notes.push(`DOI differs: file=${doi} vs found=${normDoi(suggestDoi)}`); addFix("doi",normDoi(suggestDoi),`Set DOI → ${normDoi(suggestDoi)}`); }
+    if(primarySafeFixes && doiConfidence.ok){ out.notes.push(`DOI differs: file=${doi} vs found=${normDoi(suggestDoi)}`); addFix("doi",normDoi(suggestDoi),`Set DOI → ${normDoi(suggestDoi)}`); }
     else out.notes.push(`Different DOI found but not suggested: ${normDoi(suggestDoi)} (${doiConfidence.reason}).`);
   }
 
@@ -1228,6 +1444,10 @@ function doiPreviewRecord(r){
     authors:r.authors||"",
     journal:r.journal||"",
     pages:r.pages||"",
+    volume:r.volume||"",
+    number:r.number||r.issue||"",
+    month:r.month||"",
+    articleno:r.articleno||"",
     publisher:r.publisher||"",
     source:r.source||"",
     lookup:r._lookup||"",
@@ -1247,6 +1467,11 @@ async function augmentVerify(e,out,title){
         if(!r.ok) out.notes.push(`URL ${r.reason}: ${u}`); }
     }catch(err){}
   }
+  const curDoi=e.fields.doi?normDoi(e.fields.doi):"";
+  const venue=entryVenue(e);
+  if(curDoi && isPreprintDoi(curDoi) && venue && !isPreprintVenue(venue)){
+    out.notes.push(`DOI is a preprint DOI (${curDoi}) but venue is "${venue}" — use the journal/conference DOI if available`);
+  }
   // published version of an arXiv/preprint entry
   if(V.findPublished && isPreprint(e)){
     out.isPreprint=true;
@@ -1255,12 +1480,13 @@ async function augmentVerify(e,out,title){
       if(pub){ out.published=pub;
         out.notes.push(`Published version found: ${pub.doi}${pub.year?` (${pub.year})`:""}`);
         const cur=e.fields.doi?normDoi(e.fields.doi):null;
-        if(pub.doi && normDoi(pub.doi)!==cur && !out.fixes.some(f=>f.field==="doi")){
-          out.fixes.push({field:"doi",value:normDoi(pub.doi),label:`Use published DOI ${normDoi(pub.doi)}`});
+        if(pub.doi && normDoi(pub.doi)!==cur){
+          addVerifyFix(out,"doi",normDoi(pub.doi),`Use published DOI ${normDoi(pub.doi)}`);
           // the proposed DOI is now the published one, not the preprint matched earlier —
           // show the published record's metadata in the preview so they correspond
           out.doiPreview=doiPreviewRecord(pub);
         }
+        addPublishedRecordFixes(e,out,pub);
       }else out.notes.push("Preprint — no published version found yet.");
     }catch(err){}
   }
@@ -1297,6 +1523,7 @@ function journalMatch(a,b){
   const A=jWords(a),B=jWords(b);
   // Skip when either side is a single token: it's usually an acronym (NeurIPS, JMLR,
   // PNAS) that can't be prefix-matched, and one-word names are too risky to compare.
+  if(A.length===1 && B.length===1) return A[0]===B[0];
   if(A.length<2 || B.length<2) return true;
   const [short,long]=A.length<=B.length?[A,B]:[B,A];
   let hit=0;
@@ -1321,10 +1548,14 @@ function venueFieldFor(e){
 function isArxivVenue(s){
   return /(^|\b)arxiv(\.org)?\b/i.test(String(s||""));
 }
+function canonicalPages(s){
+  return cleanField(s).replace(/[—–]/g,"-").replace(/^(\d+)\s*-+\s*(\d+)$/,"$1--$2");
+}
 // Only compare purely numeric page ranges — skip eLocation/article ids like "e0123456".
 function pageSpan(s){ if(/[a-zA-Z]/.test(s||"")) return null;
   const m=(s||"").replace(/[—–]/g,"-").match(/\d+/g); return m?[m[0],m[m.length-1]]:null; }
 function pagesDiffer(a,b){
+  a=canonicalPages(a); b=canonicalPages(b);
   const A=pageSpan(a),B=pageSpan(b);
   if(!A||!B) return false;                          // can't compare (e.g. article number)
   if(A[0]!==B[0]) return true;                      // different start page
@@ -1374,6 +1605,10 @@ function render(){
   $("#btnImportReport").disabled=false;
   $("#btnExport").disabled=false;
   renderEntries();
+}
+function entryLetter(e){
+  const c=String(e&&e.key||"").trim().charAt(0).toUpperCase();
+  return /^[A-Z]$/.test(c) ? c : "#";
 }
 /* the entries currently shown, honouring both the status filter and the search box */
 function filteredEntries(){
@@ -1426,8 +1661,35 @@ function renderEntries(){
   const box=$("#entries"); box.innerHTML="";
   const list=filteredEntries();
   $("#btnAutofix").title=autoFixTooltip(ENTRIES);
+  renderAlphaRail(list);
   if(!list.length){ box.innerHTML=`<p class="muted" style="padding:16px">No entries match.</p>`; return; }
-  for(const e of list){ box.appendChild(entryEl(e)); if(e._verify) paintVerify(e); }
+  const seenLetters=new Set();
+  for(const e of list){
+    const el=entryEl(e);
+    const letter=entryLetter(e);
+    if(!seenLetters.has(letter)){
+      el.dataset.letterAnchor=letter;
+      seenLetters.add(letter);
+    }
+    box.appendChild(el);
+    if(e._verify) paintVerify(e);
+  }
+}
+function renderAlphaRail(list){
+  const rail=$("#alphaRail");
+  if(!rail) return;
+  const letters=["#","A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z"];
+  const available=new Set(list.map(entryLetter));
+  rail.classList.toggle("show",list.length>12);
+  rail.innerHTML=letters.map(l=>
+    `<button type="button" data-letter="${l}" class="${available.has(l)?"on":""}" ${available.has(l)?"": "disabled"} aria-label="Jump to ${l}">${l}</button>`
+  ).join("");
+  rail.querySelectorAll("button.on").forEach(b=>b.onclick=()=>{
+    const target=document.querySelector(`.entry[data-letter-anchor="${cssEsc(b.dataset.letter)}"]`);
+    if(!target) return;
+    rail.querySelectorAll("button").forEach(x=>x.classList.toggle("active",x===b));
+    target.scrollIntoView({behavior:"smooth",block:"start"});
+  });
 }
 const OPEN=new Set();   // remembers which entries are expanded across re-renders
 function entryEl(e){
@@ -1779,6 +2041,10 @@ function doiPreviewHtml(p){
     ["Authors",p.authors],
     ["First author",p.firstAuthor],
     ["Journal",p.journal],
+    ["Volume",p.volume],
+    ["Number",p.number],
+    ["Month",p.month],
+    ["Article no.",p.articleno],
     ["Publisher",p.publisher],
     ["Pages",p.pages],
     ["Source",p.lookup?`${p.source} (${p.lookup} lookup)`:p.source],
@@ -1894,7 +2160,7 @@ function buildConfigUI(){
       </div>
     </div>
     <div class="row" style="align-items:flex-start"><input type="checkbox" id="vf_urls" ${C.verification.checkUrls?"checked":""}><label>Check <code class="k">url</code> links are still alive <span class="muted">— browsers can only detect a dead host/timeout cross-origin, not a live 404 page</span></label></div>
-    <div class="row" style="align-items:flex-start"><input type="checkbox" id="vf_pub" ${C.verification.findPublished?"checked":""}><label>Find published version of arXiv / preprints <span class="muted">— searches Crossref &amp; OpenAlex for a peer-reviewed version with a DOI</span></label></div>
+    <div class="row" style="align-items:flex-start"><input type="checkbox" id="vf_pub" ${C.verification.findPublished?"checked":""}><label>Find published version of arXiv / bioRxiv / medRxiv / other preprints <span class="muted">— searches Crossref &amp; OpenAlex for a peer-reviewed version with a DOI</span></label></div>
     <div class="field" style="margin-top:12px"><label>Polite-pool email</label>
       <p class="hint">Sent as <code class="k">mailto=</code> to Crossref &amp; OpenAlex for faster, more reliable access. Recommended.</p>
       <input type="text" id="vf_mailto" value="${attr(C.verification.mailto)}" placeholder="you@university.edu"></div>

@@ -20,10 +20,12 @@ export function createCrossrefSource({mailtoParam}){
 
 function normCrossref(m){
   const dp=(m.issued&&m.issued["date-parts"])||(m.published&&m.published["date-parts"]);
+  const dateParts=dp&&dp[0]||[];
   const authors=((m.author||[]).map(a=>a.name||compactJoin([a.given,a.family])).filter(Boolean));
-  return { title:(m.title&&m.title[0])||"", year:dp&&dp[0]&&dp[0][0]?String(dp[0][0]):"",
+  return { title:(m.title&&m.title[0])||"", year:dateParts[0]?String(dateParts[0]):"",
     doi:m.DOI||"", firstAuthor:(m.author&&m.author[0]&&(m.author[0].family||""))||"",
     authors:authors.join("; "), journal:(m["container-title"]&&m["container-title"][0])||"", pages:m.page||"",
-    publisher:m.publisher||"",
+    volume:m.volume||"", number:m.issue||"", month:dateParts[1]?String(dateParts[1]):"",
+    articleno:m["article-number"]||"", publisher:m.publisher||"",
     source:"Crossref", url:m.URL||(m.DOI?`https://doi.org/${m.DOI}`:"") };
 }

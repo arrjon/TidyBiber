@@ -25,5 +25,6 @@ function normPubMed(p){
   const authors=((p.authors||[]).map(a=>a.name).filter(Boolean));
   return { title:(p.title||"").replace(/\.$/,""), year:p.pubdate?String(p.pubdate).match(/\d{4}/)?.[0]||"":"",
     doi, firstAuthor:fa.split(/\s+/)[0]||"", authors:authors.join("; "), journal:p.fulljournalname||p.source||"",
-    pages:p.pages||"", source:"PubMed", url:p.uid?`https://pubmed.ncbi.nlm.nih.gov/${p.uid}/`:(doi?`https://doi.org/${doi}`:"") };
+    pages:p.pages||"", volume:p.volume||"", number:p.issue||"",
+    source:"PubMed", url:p.uid?`https://pubmed.ncbi.nlm.nih.gov/${p.uid}/`:(doi?`https://doi.org/${doi}`:"") };
 }
