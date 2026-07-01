@@ -1681,10 +1681,17 @@ function renderAlphaRail(list){
   const letters=["#","A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z"];
   const available=new Set(list.map(entryLetter));
   rail.classList.toggle("show",list.length>12);
-  rail.innerHTML=letters.map(l=>
-    `<button type="button" data-letter="${l}" class="${available.has(l)?"on":""}" ${available.has(l)?"": "disabled"} aria-label="Jump to ${l}">${l}</button>`
-  ).join("");
+  rail.innerHTML=letters.map(l=>{
+    const enabled=l==="#"||available.has(l);
+    const label=l==="#"?"Back to top":`Jump to ${l}`;
+    return `<button type="button" data-letter="${l}" class="${enabled?"on":""}" ${enabled?"": "disabled"} aria-label="${label}">${l}</button>`;
+  }).join("");
   rail.querySelectorAll("button.on").forEach(b=>b.onclick=()=>{
+    if(b.dataset.letter==="#"){
+      rail.querySelectorAll("button").forEach(x=>x.classList.toggle("active",x===b));
+      window.scrollTo({top:0,behavior:"smooth"});
+      return;
+    }
     const target=document.querySelector(`.entry[data-letter-anchor="${cssEsc(b.dataset.letter)}"]`);
     if(!target) return;
     rail.querySelectorAll("button").forEach(x=>x.classList.toggle("active",x===b));
