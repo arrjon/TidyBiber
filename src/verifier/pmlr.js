@@ -69,6 +69,7 @@ function normPmlrEntry(e){
     authors:authors.join("; "),
     journal:cleanPmlrValue(f.booktitle||f.series||"Proceedings of Machine Learning Research"),
     pages:cleanPmlrValue(f.pages).replace(/--/g,"-"),
+    publisher:cleanPmlrValue(f.publisher||"PMLR"),
     source:"PMLR",
     url:cleanPmlrValue(f.url||f.pdf)
   };

@@ -20,11 +20,13 @@ export function createOpenAlexSource({mailtoParam}){
 function normOpenAlex(w){
   const fa=w.authorships&&w.authorships[0]&&w.authorships[0].author&&w.authorships[0].author.display_name||"";
   const authors=((w.authorships||[]).map(a=>a.author&&a.author.display_name).filter(Boolean));
-  const venue=w.primary_location&&w.primary_location.source&&w.primary_location.source.display_name||"";
+  const src=w.primary_location&&w.primary_location.source||{};
+  const venue=src.display_name||"";
+  const publisher=src.host_organization_name||"";
   const b=w.biblio||{};
   const pages=b.first_page?(b.last_page&&b.last_page!==b.first_page?`${b.first_page}-${b.last_page}`:b.first_page):"";
   return { title:w.title||w.display_name||"", year:w.publication_year?String(w.publication_year):"",
     doi:(w.doi||"").replace(/^https?:\/\/(dx\.)?doi\.org\//i,""),
-    firstAuthor:fa.split(/\s+/).pop()||"", authors:authors.join("; "), journal:venue, pages,
+    firstAuthor:fa.split(/\s+/).pop()||"", authors:authors.join("; "), journal:venue, pages, publisher,
     source:"OpenAlex", url:w.doi||w.id||"" };
 }

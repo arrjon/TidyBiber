@@ -67,7 +67,8 @@ const DEFAULT_CONFIG = {
     detectDuplicateKeys: true,
     detectDuplicateDOIs: true,
     warnUnknownFields: true,
-    monthAbbrev: true             // month should be an integer 1..12
+    monthAbbrev: true,            // month should be an integer 1..12
+    dateToYear: true              // biblatex date should be reduced to a plain year
   },
   autofix: {
     renameKeys: false,             // allow Auto-fix to rename citation keys
@@ -266,6 +267,25 @@ function lintAll(entries){
       add("warn",`Year is not a 4-digit number: "${e.fields.year}"`, y||"",
         y?[{label:`Fix → ${y}`,kind:"setField",field:"year",value:y,auto:true}]:[]);
     }
+    // biblatex date → plain year
+    if(ch.dateToYear && e.fields.date){
+      const dRaw=e.fields.date.replace(/[{}]/g,"").trim();
+      const dy=(dRaw.match(/\d{4}/)||[])[0];
+      const yRaw=(e.fields.year||"").replace(/[{}]/g,"").trim();
+      if(dy){
+        if(!yRaw)
+          add("warn",`Use year instead of date field: "${dRaw}"`,dy,
+            [{label:`Convert date → year ${dy}`,kind:"convertDateToYear",auto:true}]);
+        else if(yRaw!==dy)
+          // A genuine conflict (often print-edition vs online-first year) — let the user pick, don't auto-apply.
+          add("warn",`year (${yRaw}) and date (${dRaw}) disagree`,dy,
+            [{label:`Use date's year ${dy}`,kind:"convertDateToYear"},
+             {label:"Remove date field",kind:"removeField",field:"date"}]);
+        else
+          add("warn",`Redundant date field duplicates year (${yRaw})`,"",
+            [{label:"Remove date field",kind:"removeField",field:"date",auto:true}]);
+      }
+    }
     // pages
     if(ch.requirePageRangeDash && e.fields.pages){
       const p=e.fields.pages.trim();
@@ -335,7 +355,7 @@ function lintAll(entries){
   }
   return entries;
 }
-const VERIFY_PROBLEM_RE=/mismatch|differs|fabrication|Missing|Year:|author:|Author list|Journal\/venue:|Pages:|unreachable|timed out|Published version|Preprint/i;
+const VERIFY_PROBLEM_RE=/mismatch|differs|fabrication|Missing|Year:|author:|Author list|Journal\/venue:|abbreviated|Pages:|unreachable|timed out|Published version|Preprint/i;
 const REPORT_CACHE_START="-----BEGIN TIDYBIBER VERIFICATION CACHE-----";
 const REPORT_CACHE_END="-----END TIDYBIBER VERIFICATION CACHE-----";
 function verificationIssue(e){
@@ -682,8 +702,13 @@ function reportTitleKey(e){
 function reportYear(e){
   return String(e.fields.year||e.fields.date||"").match(/\d{4}/)?.[0]||"";
 }
-function refreshImportedVerify(e,v){
-  if(!v || v.status!=="found") return {verify:v, cleared:0};
+/* Drop only the notes/fixes a verify record no longer needs (because the entry
+   now matches the database on those points), keeping the rest of the record.
+   Used both when importing a cached report and — crucially — after the user
+   accepts one suggested fix, so accepting a DOI/journal/author no longer wipes
+   the entry's other suggestions. Returns how many findings were cleared. */
+function pruneResolvedVerify(e,v,emptyNote){
+  if(!v || v.status!=="found") return 0;
   let cleared=0;
   const keep=[];
   for(const note of v.notes||[]){
@@ -704,17 +729,34 @@ function refreshImportedVerify(e,v){
     if(importedFixResolved(e,f)){ cleared++; return false; }
     return true;
   });
-  if(!v.notes.length) v.notes.push(`Imported cached verification${v.source?` from ${v.source}`:""}; local fields still match the saved result.`);
+  if(!v.notes.length) v.notes.push(emptyNote||`Confirmed by ${v.source||"verification"}.`);
+  return cleared;
+}
+function refreshImportedVerify(e,v){
+  if(!v || v.status!=="found") return {verify:v, cleared:0};
+  const cleared=pruneResolvedVerify(e,v,`Imported cached verification${v.source?` from ${v.source}`:""}; local fields still match the saved result.`);
   return {verify:v, cleared};
 }
 function importedVerifyNoteResolved(e,v,note){
   const n=String(note||"");
   const curDoi=e.fields.doi?normDoi(e.fields.doi):"";
   const foundDoi=normDoi(v.matchedDoi||(v.doiPreview&&v.doiPreview.doi)||"");
-  let m=n.match(/^Year: file=.* vs .*=(\d{4})$/);
+  let m=n.match(/^Year: file=.* vs .*=(\d{4})/);
+  if(m) return reportYear(e)===m[1];
+  m=n.match(/^Missing year; found .*=(\d{4})$/);
   if(m) return reportYear(e)===m[1];
   m=n.match(/^Journal\/venue: file=".*" vs .*="(.+)"$/);
   if(m) return entryVenue(e) && journalMatch(entryVenue(e),m[1]);
+  m=n.match(/^Journal abbreviated: file=".*" vs full name "(.+)"$/);
+  if(m) return entryVenue(e) && journalMatch(entryVenue(e),m[1]) && !journalLooksAbbreviated(entryVenue(e));
+  m=n.match(/^Missing (?:journal|journaltitle|booktitle); found .*="(.+)"$/);
+  if(m) return entryVenue(e) && journalMatch(entryVenue(e),m[1]);
+  m=n.match(/^Missing title; found "(.+)"$/);
+  if(m){ const ct=cleanField(e.fields.title); return !!ct && titleSimilarity(ct,m[1]).passes(CONFIG.verification.titleSimThreshold); }
+  m=n.match(/^Missing pages; found .*=(.+)$/);
+  if(m) return e.fields.pages && !pagesDiffer(cleanField(e.fields.pages),m[1]);
+  m=n.match(/^Missing publisher; found .*="(.+)"$/);
+  if(m) return !!cleanField(e.fields.publisher);   // resolved once a publisher is present
   m=n.match(/^Pages: file=.* vs .*=([^\s].*)$/);
   if(m) return e.fields.pages && !pagesDiffer(cleanField(e.fields.pages),m[1]);
   m=n.match(/^Missing DOI; found (.+)$/);
@@ -729,6 +771,12 @@ function importedVerifyNoteResolved(e,v,note){
     return titleSimilarity(cleanField(e.fields.title),v.matchedTitle).passes(CONFIG.verification.titleSimThreshold);
   m=n.match(/^First author: file=.* vs .*=([^\s]+)$/);
   if(m) return authorLastMatches(normAuthorLast(entryFirstAuthorLast(e)),normAuthorLast(m[1]));
+  m=n.match(/^Missing author; found (.+)$/);
+  if(m) return !!cleanField(e.fields.author) && !bibAuthorsDiffer(e.fields.author,m[1]);
+  if(/^Author list (overlap low|first-name conflict)/.test(n) && v.matchedAuthors!=null){
+    const cmp=authorListCompare(e,{authors:v.matchedAuthors});
+    return !!(cmp && cmp.ok);
+  }
   if(foundDoi && /^Different DOI found but not suggested/i.test(n)) return curDoi===foundDoi;
   return false;
 }
@@ -742,8 +790,27 @@ function importedFixResolved(e,f){
   const val=cleanField(f.value);
   if(f.field==="doi") return cur && normDoi(cur)===normDoi(val);
   if(f.field==="pages") return cur && !pagesDiffer(cur,val);
-  if(["journal","journaltitle","booktitle"].includes(f.field)) return cur && journalMatch(cur,val);
+  if(["journal","journaltitle","booktitle"].includes(f.field))
+    // Resolved when they match AND the file isn't still the abbreviation of a spelled-out
+    // target — otherwise an unapplied "Expand" fix would look already-satisfied.
+    return cur && journalMatch(cur,val) && !(journalLooksAbbreviated(cur) && !journalLooksAbbreviated(val));
+  if(f.field==="author") return cur && !bibAuthorsDiffer(cur,val);
   return cur && cur===val;
+}
+/* Compare two BibTeX author strings ignoring case, braces, punctuation and
+   "First Last" vs "Last, First" ordering differences that don't change who's listed. */
+function bibAuthorsDiffer(a,b){
+  return authorsCompareKey(a)!==authorsCompareKey(b);
+}
+function authorsCompareKey(s){
+  return String(s||"").split(/\s+and\s+/i)
+    .map(name=>{
+      const p=authorPartsFromName(name);
+      return p?`${p.last} ${p.first}`.trim():"";
+    })
+    .filter(Boolean)
+    .sort()
+    .join("|");
 }
 function entryVenue(e){return cleanField(e.fields.journal||e.fields.journaltitle||e.fields.booktitle);}
 function cleanField(s){return String(s||"").replace(/[{}]/g,"").trim();}
@@ -946,6 +1013,37 @@ function doiSuggestionConfidence(e,r,title){
   return {ok:false, reason:"title-only match lacks author-list or journal confirmation"};
 }
 
+/* Turn a matched record's "First Last; First Last; …" author list into a BibTeX
+   "Last, First and Last, First" string. Name order is source-dependent: PubMed
+   lists "Surname Initials"; every other source lists the given name first. */
+function dbAuthorToBib(name,surnameFirst){
+  let s=String(name||"").replace(/\s+/g," ").trim();
+  if(!s) return "";
+  s=s.replace(/\s+\d{1,4}$/,"");        // strip DBLP disambiguation suffix ("Wei Wang 0001")
+  if(s.includes(",")) return s;         // already "Last, First"
+  const parts=s.split(" ").filter(Boolean);
+  if(parts.length<2) return s;          // single token — leave as-is
+  if(surnameFirst){                     // PubMed: "Smith JD" → "Smith, J. D."
+    const last=parts[0];
+    const initials=parts.slice(1).join("").replace(/[^A-Za-z]/g,"");
+    const given=initials.split("").map(c=>c+".").join(" ");
+    return given?`${last}, ${given}`:last;
+  }
+  const last=parts[parts.length-1];     // "John A. Smith" → "Smith, John A."
+  return `${last}, ${parts.slice(0,-1).join(" ")}`;
+}
+function dbAuthorsToBib(r){
+  const list=String(r.authors||"").split(/\s*;\s*/).map(x=>x.trim()).filter(Boolean);
+  if(!list.length) return "";
+  const surnameFirst=/pubmed/i.test(r.source||"");
+  return list.map(n=>dbAuthorToBib(n,surnameFirst)).join(" and ");
+}
+function authorFixLabel(verb,authors){
+  const list=authors.split(/\s+and\s+/i);
+  const preview=list.length>2?`${list[0]} et al. (${list.length} authors)`:authors;
+  return `${verb} → ${preview}`;
+}
+
 async function verifyEntry(e){
   const out={status:"unchecked",notes:[],matches:[],fixes:[]};
   const V=CONFIG.verification;
@@ -999,21 +1097,35 @@ async function verifyEntry(e){
   const primary=recs[0];
   out.source=recs.map(r=>r.source).join(" + ");
   out.matchedTitle=primary.title; out.matchedDoi=primary.doi; out.matchedUrl=primary.url;
+  out.matchedAuthors=primary.authors||"";
   if(primary.doi) out.doiPreview=doiPreviewRecord(primary);
 
   const efYear=(e.fields.year||"").replace(/\D/g,"");
   const efAuthor=normAuthorLast(entryFirstAuthorLast(e));
-  const jfield=e.fields.journaltitle!=null?"journaltitle":e.fields.booktitle!=null?"booktitle":"journal";
+  const efTitle=cleanField(e.fields.title);
+  const jfield=venueFieldFor(e);
   const efJournal=(e.fields.journal||e.fields.journaltitle||e.fields.booktitle||"").replace(/[{}]/g,"").trim();
   const efPages=(e.fields.pages||"").replace(/[{}]/g,"").trim();
+  const efPublisher=cleanField(e.fields.publisher);
+  // Only propose adding a venue/pages to works that take them — avoids offering
+  // "Add journal → <publisher>" on a @book from a source that reuses that field.
+  const PUB_TYPES=["article","inproceedings","conference","incollection","inbook"];
+  const venueExpected=e.fields.journal!=null||e.fields.journaltitle!=null||e.fields.booktitle!=null||PUB_TYPES.includes(e.type);
+  const pagesExpected=e.fields.pages!=null||PUB_TYPES.includes(e.type);
+  // Publisher is only required for these types; don't push it onto articles.
+  const publisherExpected=e.fields.publisher!=null||["book","incollection","inbook"].includes(e.type);
   // record a one-click fix (first source to suggest a given field wins)
   const addFix=(field,value,label)=>{ if(value && !out.fixes.some(f=>f.field===field)) out.fixes.push({field,value:String(value),label}); };
 
   // Aggregate cross-source signals.
   for(const r of recs){
     if(r.year && efYear && r.year!==efYear){
-      out.notes.push(`Year: file=${efYear} vs ${r.source}=${r.year}`);
+      out.notes.push(`Year: file=${efYear} vs ${r.source}=${r.year} — journal-edition and online-first years can differ; use the edition year`);
       addFix("year",r.year,`Set year → ${r.year}`);
+    }else if(r.year && !efYear && !e.fields.year && !e.fields.date){
+      // No year anywhere (and no date to derive one from locally) — propose the lookup's.
+      out.notes.push(`Missing year; found ${r.source}=${r.year}`);
+      addFix("year",r.year,`Add year ${r.year}`);
     }
     if(r.firstAuthor && efAuthor && !authorLastMatches(efAuthor,normAuthorLast(r.firstAuthor)))
       out.notes.push(`First author: file=${efAuthor} vs ${r.source}=${normAuthorLast(r.firstAuthor)}`);
@@ -1026,13 +1138,65 @@ async function verifyEntry(e){
       const sim=titleSimilarity(title,r.title);
       if(!sim.passes(V.titleSimThreshold)) out.notes.push(`Low title similarity vs ${r.source} (${(sim.score*100|0)}%${sim.reason?`, ${sim.reason}`:""}) — possible mismatch/fabrication`);
     }
-    if(r.journal && efJournal && !journalMatch(efJournal,r.journal)){
-      out.notes.push(`Journal/venue: file="${efJournal}" vs ${r.source}="${r.journal}"`);
-      addFix(jfield,r.journal,`Set ${jfield} → ${r.journal}`);
+    if(r.journal){
+      const dbJournal=cleanField(r.journal);
+      if(!efJournal){
+        if(venueExpected){
+          out.notes.push(`Missing ${jfield}; found ${r.source}="${dbJournal}"`);
+          addFix(jfield,dbJournal,`Add ${jfield} → ${dbJournal}`);
+        }
+      }else if(!journalMatch(efJournal,dbJournal)){
+        out.notes.push(`Journal/venue: file="${efJournal}" vs ${r.source}="${dbJournal}"`);
+        addFix(jfield,dbJournal,`Set ${jfield} → ${dbJournal}`);
+      }else if(journalLooksAbbreviated(efJournal) && !journalLooksAbbreviated(dbJournal)
+               && dbJournal.length>efJournal.length && dbJournal.toLowerCase()!==efJournal.toLowerCase()){
+        // Same journal, but the file uses an abbreviation and the lookup spells it out.
+        out.notes.push(`Journal abbreviated: file="${efJournal}" vs full name "${dbJournal}"`);
+        addFix(jfield,dbJournal,`Expand ${jfield} → ${dbJournal}`);
+      }
     }
-    if(r.pages && efPages && pagesDiffer(efPages,r.pages)){
-      out.notes.push(`Pages: file=${efPages} vs ${r.source}=${r.pages}`);
-      addFix("pages",r.pages,`Set pages → ${r.pages}`);
+    if(r.pages){
+      const dbPages=cleanField(r.pages);
+      if(!efPages){
+        if(pagesExpected){
+          out.notes.push(`Missing pages; found ${r.source}=${dbPages}`);
+          addFix("pages",dbPages,`Add pages ${dbPages}`);
+        }
+      }else if(pagesDiffer(efPages,r.pages)){
+        out.notes.push(`Pages: file=${efPages} vs ${r.source}=${r.pages}`);
+        addFix("pages",r.pages,`Set pages → ${r.pages}`);
+      }
+    }
+    if(r.publisher && !efPublisher && publisherExpected){
+      const dbPublisher=cleanField(r.publisher);
+      out.notes.push(`Missing publisher; found ${r.source}="${dbPublisher}"`);
+      addFix("publisher",dbPublisher,`Add publisher → ${dbPublisher}`);
+    }
+  }
+  // Missing title — fillable only when a DOI lookup returned one (a title-less
+  // entry can't be found by title search in the first place).
+  if(primary.title && !efTitle){
+    const t=cleanField(primary.title);
+    out.notes.push(`Missing title; found "${t}"`);
+    addFix("title",t,`Add title → ${t.length>60?t.slice(0,57)+"…":t}`);
+  }
+  // Author-list fix — offer the database's canonical author list when the file's
+  // authors disagree with it. Skip editor-only entries (books/proceedings) so we
+  // never overwrite an editor list with a work's authors.
+  if(!e.fields.editor){
+    const dbAuthors=dbAuthorsToBib(primary);
+    const fileAuthors=cleanField(e.fields.author);
+    if(dbAuthors){
+      if(!fileAuthors){
+        out.notes.push(`Missing author; found ${dbAuthors}`);
+        addFix("author",dbAuthors,authorFixLabel("Add authors",dbAuthors));
+      }else{
+        const authorList=authorListCompare(e,primary);
+        const firstMismatch=primary.firstAuthor && efAuthor && !authorLastMatches(efAuthor,normAuthorLast(primary.firstAuthor));
+        const listMismatch=!!(authorList && !authorList.ok);
+        if((firstMismatch||listMismatch) && bibAuthorsDiffer(fileAuthors,dbAuthors))
+          addFix("author",dbAuthors,authorFixLabel("Set authors",dbAuthors));
+      }
     }
   }
   // DOI suggestion if we have one and the entry doesn't.
@@ -1064,6 +1228,7 @@ function doiPreviewRecord(r){
     authors:r.authors||"",
     journal:r.journal||"",
     pages:r.pages||"",
+    publisher:r.publisher||"",
     source:r.source||"",
     lookup:r._lookup||"",
     note:r.note||""
@@ -1139,6 +1304,19 @@ function journalMatch(a,b){
     if(long.some(x=>x===w||(w.length>=3&&x.startsWith(w))||(x.length>=3&&w.startsWith(x)))) hit++;
   }
   return hit/short.length>=0.6;
+}
+// A journal name that uses abbreviation dots ("Annu. Rev. Cell Dev. Biol.",
+// "J. Mach. Learn. Res.") — a word immediately followed by a period.
+function journalLooksAbbreviated(s){
+  return /[A-Za-z]\.(\s|$)/.test(String(s||"").replace(/[{}]/g,""));
+}
+// Which field a looked-up venue should populate. Prefer whichever the entry already
+// uses; when none is present, pick by type so proceedings get booktitle, not journal.
+function venueFieldFor(e){
+  if(e.fields.journaltitle!=null) return "journaltitle";
+  if(e.fields.booktitle!=null) return "booktitle";
+  if(e.fields.journal!=null) return "journal";
+  return ["inproceedings","conference","incollection","inbook"].includes(e.type) ? "booktitle" : "journal";
 }
 function isArxivVenue(s){
   return /(^|\b)arxiv(\.org)?\b/i.test(String(s||""));
@@ -1231,6 +1409,7 @@ function autoFixTooltip(entries){
       else if(/Use booktitle instead of eventtitle/i.test(msg)) addType("proceedings eventtitle aliases");
       else if(/Unexpected field/i.test(msg)) addType("known field-name typos");
       else if(/Year is not a 4-digit number/i.test(msg)) addType("year formatting");
+      else if(/Use year instead of date field|date .* disagree|Redundant date field/i.test(msg)) addType("date → year");
       else if(/Page range uses single dash/i.test(msg)) addType("page-range dashes");
       else if(/DOI should be bare/i.test(msg)) addType("DOI URL/prefix cleanup");
       else if(/Month must be an integer/i.test(msg)) addType("month names/abbreviations");
@@ -1342,6 +1521,10 @@ function mutateEntry(e,act){
       e.order=e.order.filter(x=>x!==act.field);
       if(e.fields[act.to]==null){ e.fields[act.to]=v; e.order.push(act.to); } return true; }
     case "setKey": e.key=act.value; return true;
+    case "convertDateToYear":{ const y=(String(e.fields.date||"").replace(/[{}]/g,"").match(/\d{4}/)||[])[0];
+      if(!y) return false;
+      e.fields.year=y; if(!e.order.includes("year")) e.order.push("year");
+      delete e.fields.date; e.order=e.order.filter(x=>x!=="date"); return true; }
     case "allowField": if(!CONFIG.optionalFields.includes(act.field)) CONFIG.optionalFields.push(act.field); return false; // config change, not an entry change
   }
   return false;
@@ -1349,7 +1532,12 @@ function mutateEntry(e,act){
 function applyFix(e,act){
   if(!act) return;
   const oldKey=e.key.toLowerCase();
-  if(mutateEntry(e,act)){ e._dirty=true; delete e._verify; }
+  if(mutateEntry(e,act)){
+    e._dirty=true;
+    // Keep the verification record but drop only what this edit resolved, so
+    // accepting one suggested fix no longer discards the entry's other fixes.
+    if(e._verify) pruneResolvedVerify(e,e._verify);
+  }
   if(OPEN.has(oldKey)){ OPEN.delete(oldKey); OPEN.add(e.key.toLowerCase()); }
   lintAll(ENTRIES); render(); toast("Fixed");
 }
@@ -1362,8 +1550,9 @@ function autoVerifyFixes(e){
 function autoFixEntry(e){
   let n=0;
   const verifyActs=autoVerifyFixes(e);
-  for(const is of e.issues) for(const a of (is.actions||[])) if(a.auto && mutateEntry(e,a)){ n++; e._dirty=true; delete e._verify; }
-  for(const a of verifyActs) if(mutateEntry(e,a)){ n++; e._dirty=true; delete e._verify; }
+  for(const is of e.issues) for(const a of (is.actions||[])) if(a.auto && mutateEntry(e,a)){ n++; }
+  for(const a of verifyActs) if(mutateEntry(e,a)){ n++; }
+  if(n){ e._dirty=true; if(e._verify) pruneResolvedVerify(e,e._verify); }
   lintAll(ENTRIES); render(); toast(n?`Auto-fixed ${n} issue${n>1?"s":""}`:"Nothing to auto-fix");
 }
 function autoFixAll(){
@@ -1372,7 +1561,7 @@ function autoFixAll(){
     const verifyActs=autoVerifyFixes(e);
     for(const is of e.issues) for(const a of (is.actions||[])) if(a.auto && mutateEntry(e,a)){ c++; }
     for(const a of verifyActs) if(mutateEntry(e,a)){ c++; }
-    if(c){ e._dirty=true; delete e._verify; n+=c; ents++; }
+    if(c){ e._dirty=true; if(e._verify) pruneResolvedVerify(e,e._verify); n+=c; ents++; }
   }
   lintAll(ENTRIES); render();
   toast(n?`Auto-fixed ${n} issue${n>1?"s":""} across ${ents} entr${ents>1?"ies":"y"}`:"Nothing to auto-fix");
@@ -1579,7 +1768,8 @@ function paintVerify(e){
   }
   slot.innerHTML=`<div class="issues" style="margin:0 0 12px">${rows}</div>`;
   slot.querySelectorAll(".vfixbtn").forEach(b=>b.onclick=ev=>{ev.preventDefault();
-    const f=v.fixes[+b.dataset.vf]; v.fixes.splice(+b.dataset.vf,1);  // consume it
+    const f=v.fixes[+b.dataset.vf];
+    // pruneResolvedVerify (via applyFix) consumes this fix and re-renders the rest.
     applyFix(e,{kind:"setField",field:f.field,value:f.value});});
 }
 function doiPreviewHtml(p){
@@ -1589,6 +1779,7 @@ function doiPreviewHtml(p){
     ["Authors",p.authors],
     ["First author",p.firstAuthor],
     ["Journal",p.journal],
+    ["Publisher",p.publisher],
     ["Pages",p.pages],
     ["Source",p.lookup?`${p.source} (${p.lookup} lookup)`:p.source],
     ["Note",p.note]
@@ -1684,6 +1875,7 @@ function buildConfigUI(){
     ${chk("requirePageRangeDash","Page ranges use -- (en-dash)")}
     ${chk("doiFormat","DOI must be bare (not a URL)")}
     ${chk("monthAbbrev","Month must be an integer from 1 to 12")}
+    ${chk("dateToYear","Reduce biblatex date to a plain year")}
     ${chk("detectDuplicateKeys","Detect duplicate keys")}
     ${chk("detectDuplicateDOIs","Detect duplicate DOIs")}
     ${chk("warnUnknownFields","Warn on unexpected fields")}

@@ -24,5 +24,6 @@ function normCrossref(m){
   return { title:(m.title&&m.title[0])||"", year:dp&&dp[0]&&dp[0][0]?String(dp[0][0]):"",
     doi:m.DOI||"", firstAuthor:(m.author&&m.author[0]&&(m.author[0].family||""))||"",
     authors:authors.join("; "), journal:(m["container-title"]&&m["container-title"][0])||"", pages:m.page||"",
+    publisher:m.publisher||"",
     source:"Crossref", url:m.URL||(m.DOI?`https://doi.org/${m.DOI}`:"") };
 }

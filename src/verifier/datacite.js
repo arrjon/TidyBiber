@@ -12,6 +12,6 @@ async function byDoi(doi){
   const authors=((a.creators||[]).map(c=>c.name||compactJoin([c.givenName,c.familyName])).filter(Boolean));
   return { title:(a.titles&&a.titles[0]&&a.titles[0].title)||"", year:a.publicationYear?String(a.publicationYear):"",
     doi:a.doi||"", firstAuthor:fa.split(/[\s,]+/).filter(Boolean)[0]||"", authors:authors.join("; "),
-    journal:(a.container&&a.container.title)||a.publisher||"", pages:"", source:"DataCite",
+    journal:(a.container&&a.container.title)||a.publisher||"", pages:"", publisher:a.publisher||"", source:"DataCite",
     url:a.url||(a.doi?`https://doi.org/${a.doi}`:"") };
 }
