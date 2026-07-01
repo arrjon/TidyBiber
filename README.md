@@ -1,6 +1,8 @@
 <div align="center">
 
-# 🦫 TidyBiber
+<img src="src/Logo.png" alt="TidyBiber logo" width="140">
+
+# TidyBiber
 
 **Lint, format, and verify your BibTeX — right in the browser.**
 
