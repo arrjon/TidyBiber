@@ -1559,11 +1559,25 @@ function isArxivVenue(s){
   return /(^|\b)arxiv(\.org)?\b/i.test(String(s||""));
 }
 function canonicalPages(s){
-  return cleanField(s).replace(/[—–]/g,"-").replace(/^(\d+)\s*-+\s*(\d+)$/,"$1--$2");
+  return cleanField(s).replace(/[—–]/g,"-").replace(/^(\d+)\s*-+\s*(\d+)$/,(_,start,end)=>`${start}--${expandAbbreviatedPageEnd(start,end)}`);
 }
 // Only compare purely numeric page ranges — skip eLocation/article ids like "e0123456".
-function pageSpan(s){ if(/[a-zA-Z]/.test(s||"")) return null;
-  const m=(s||"").replace(/[—–]/g,"-").match(/\d+/g); return m?[m[0],m[m.length-1]]:null; }
+function expandAbbreviatedPageEnd(start,end){
+  start=String(start||""); end=String(end||"");
+  if(!start || !end || end.length>=start.length) return end;
+  const prefix=start.slice(0,start.length-end.length);
+  let full=prefix+end;
+  if(Number(full)<Number(start) && prefix) full=String(Number(prefix)+1)+end;
+  return full;
+}
+function pageSpan(s){
+  if(/[a-zA-Z]/.test(s||"")) return null;
+  const m=(s||"").replace(/[—–]/g,"-").match(/\d+/g);
+  if(!m) return null;
+  const start=m[0];
+  const end=expandAbbreviatedPageEnd(start,m[m.length-1]);
+  return [start,end];
+}
 function pagesDiffer(a,b){
   a=canonicalPages(a); b=canonicalPages(b);
   const A=pageSpan(a),B=pageSpan(b);
