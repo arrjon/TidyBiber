@@ -2217,9 +2217,11 @@ function deleteEntry(e){
 }
 /* Merge a duplicate into its counterpart. The newer entry's values win: the
    one with the later year — or, on a year tie, the non-preprint one — keeps
-   its field values and entry type; the other entry only fills fields the
-   winner lacks. The target's citation key survives either way (it came first
-   and is likely the one already cited), and the duplicate is removed. */
+   its field values, entry type, and citation key, so the key never
+   contradicts the merged content (e.g. a 2024 key on the 2025 published
+   version); the other entry only fills fields the winner lacks. Exception:
+   if a third entry already uses the winner's key, the target's key is kept
+   to avoid creating a duplicate-key error. */
 function mergeWinner(src,target){
   const ys=parseInt(reportYear(src),10)||0, yt=parseInt(reportYear(target),10)||0;
   if(ys!==yt) return ys>yt?src:target;
@@ -2239,7 +2241,9 @@ function mergeEntryInto(src,targetKey){
   const target=ENTRIES.find(x=>x!==src && x.key.toLowerCase()===String(targetKey||"").toLowerCase());
   if(!target){ toast(`Entry "${targetKey}" no longer exists`); return; }
   const winner=mergeWinner(src,target), loser=winner===src?target:src;
-  if(!window.confirm(`Merge "${src.key}" into "${target.key}"?\n\nField values are kept from "${winner.key}" (newer year, or the published version on a tie); "${loser.key}" only fills in missing fields. The merged entry keeps the key "${target.key}", and "${src.key}" is deleted. This can't be undone.`)) return;
+  const keyTaken=ENTRIES.some(x=>x!==src&&x!==target&&x.key.toLowerCase()===winner.key.toLowerCase());
+  const keptKey=keyTaken?target.key:winner.key, lostKey=keptKey===src.key?target.key:src.key;
+  if(!window.confirm(`Merge "${src.key}" into "${target.key}"?\n\nField values are kept from "${winner.key}"; "${loser.key}" only fills in missing fields. This can't be undone.`)) return;
   // Rebuild the surviving entry from the winner's fields, then fill gaps from
   // the loser — dropping loser-only preprint markers when the winner is the
   // published version (they would re-flag the merged entry as a preprint).
@@ -2259,6 +2263,12 @@ function mergeEntryInto(src,targetKey){
   const idx=ENTRIES.indexOf(src);
   if(idx>=0) ENTRIES.splice(idx,1);
   OPEN.delete(src.key.toLowerCase());
+  if(keptKey!==target.key){
+    if(OPEN.delete(target.key.toLowerCase())) OPEN.add(keptKey.toLowerCase());
+    target.key=keptKey;
+    // a key rename alone must still reach the exported file
+    target._dirty=true;
+  }
   if(changed){
     target._dirty=true;
     // pure fill-ins keep the verification cache; overwritten values invalidate it
@@ -2266,7 +2276,7 @@ function mergeEntryInto(src,targetKey){
     else delete target._verify;
   }
   lintAll(ENTRIES); render();
-  toast(`Merged "${src.key}" into "${target.key}" keeping "${winner.key}"'s values${changed?` (${changed} field${changed===1?"":"s"} updated)`:""}`);
+  toast(`Merged "${lostKey}" into "${keptKey}" keeping "${winner.key}"'s values${changed?` (${changed} field${changed===1?"":"s"} updated)`:""}`);
 }
 function escapeHtml(s){return (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
 // URLs from the loaded .bib file or API responses become clickable links; only
