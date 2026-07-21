@@ -30,7 +30,8 @@ const DEFAULT_CONFIG = {
   protectedWords: ["Bayesian","Gaussian","Markov","Monte Carlo","Euler","Newton",
     "Fourier","Hilbert","Lipschitz","Gibbs","Poisson","Laplace","Hessian","Jacobian",
     "Riemann","Lagrangian","Hamiltonian","COVID-19","DNA","RNA","mRNA","CRISPR","Akaike",
-    "AIC","BIC","AI","ML","GPU","CPU","GPT","CNN","RNN","LSTM"],
+    "AIC","BIC","AI","ML","GPU","CPU","GPT","CNN","RNN","LSTM",
+    "SIAM","JMLR","ICML","ICLR","MCMC","IEEE"],
   // Citation key style: default = LastnameYEARword ; templated otherwise.
   keyStyle: {
     mode: "default",            // "default" | "template" | "off"
@@ -56,7 +57,7 @@ const DEFAULT_CONFIG = {
     dropUrlWhenDoi: true,      // remove url when doi is present
     titlecaseTitles: false,    // Preserve title spelling by default; opt in to Title-Case
     stripDoubleBraces: true,   // {{Journal of Tea}} → {Journal of Tea} on import
-    dropAllCaps: true          // JOURNAL OF TEA → Journal of Tea on import (Roman numerals kept)
+    dropAllCaps: true          // suggest Title Case for ALL-CAPS titles (fix suggestion only, never applied on import)
   },
   ordering: {
     sortBy: "key",             // "key" | "year" | "author" | "type" | "none"
@@ -399,6 +400,18 @@ function lintAll(entries){
           fixed?[{label:`Fix → ${fixed}`,kind:"setField",field:"month",value:fixed,auto:true}]:[]);
       }
     }
+    // ALL-CAPS titles are suggested into Title Case, never rewritten on import —
+    // acronyms ("CRISPR", "DNA") would be mangled, so the user reviews each one.
+    // A fully {braced} title comes back unchanged from titleCase and stays quiet.
+    if(C.formatting.dropAllCaps && e.fields.title && !(e.bare&&e.bare.title)){
+      const t=e.fields.title;
+      if(/[A-Z]/.test(t) && !/[a-z]/.test(t)){
+        const fixed=titleCase(t);
+        if(fixed!==t)
+          add("warn","Title is ALL-CAPS",fixed,
+            [{label:"Convert to Title Case",kind:"setField",field:"title",value:fixed}]);
+      }
+    }
     // protected words not braced in title — case-insensitive, matching what the
     // formatter (protectWordsInTitle) rewrites, so every silent casing change
     // the export would make is also surfaced as a lint issue
@@ -609,28 +622,24 @@ function applyDropFields(entries){
   return removed;
 }
 /* Value normalizations applied on import and re-lint (Formatting toggles):
-   peel redundant whole-value double braces ({{X}} → {X}) and Title-Case
-   ALL-CAPS values in presentational fields. Bare values (macros/concats) and
-   verbatim-ish fields (doi, url, pages, …) are never touched. */
-const ALLCAPS_FIELDS=new Set(["title","booktitle","journal","journaltitle","series",
-  "publisher","author","editor","address","location","institution","school","organization"]);
+   peel redundant whole-value double braces ({{X}} → {X}). Bare values
+   (macros/concats) are never touched. ALL-CAPS values are never rewritten
+   here — an ALL-CAPS title gets a lint suggestion instead (see lintAll). */
 function applyImportNormalizations(entries){
   const F=CONFIG.formatting;
-  if(!F.stripDoubleBraces && !F.dropAllCaps) return 0;
+  if(!F.stripDoubleBraces) return 0;
   let changed=0;
   for(const e of entries){
     let entryChanged=0;
     for(const f of Object.keys(e.fields)){
       if(e.bare&&e.bare[f]) continue;
       let v=e.fields[f];
-      if(F.stripDoubleBraces){
-        // {{Journal of Tea}} parses to "{Journal of Tea}" — peel brace layers
-        // that span the WHOLE value (the serializer re-adds the outer pair).
-        // Partial groups like "{Bayesian} inference" are protection, not waste.
-        while(wholeValueBraceGroup(v)) v=v.slice(1,-1);
-      }
-      if(F.dropAllCaps && ALLCAPS_FIELDS.has(f) && /[A-Z]/.test(v) && !/[a-z]/.test(v))
-        v=titleCase(v);   // keeps {braced} segments, stopwords ("and"!) and Roman numerals
+      // {{Journal of Tea}} parses to "{Journal of Tea}" — peel brace layers
+      // that span the WHOLE value (the serializer re-adds the outer pair).
+      // Partial groups like "{Bayesian} inference" are protection, not waste,
+      // and so is a braced single word ({JMLR}, {CRISPR}): even words missing
+      // from the protected list are usually deliberate case protection.
+      while(wholeValueBraceGroup(v) && /\s/.test(v.slice(1,-1))) v=v.slice(1,-1);
       if(v!==e.fields[f]){ e.fields[f]=v; entryChanged++; }
     }
     if(entryChanged){ e._dirty=true; changed+=entryChanged; }
@@ -1848,6 +1857,7 @@ const ISSUE_CATEGORIES=[
   {key:"doi",        label:"DOI format",             re:/^DOI should be bare|canonical DOI/i},
   {key:"month",      label:"Month format",           re:/^Month must be an integer/i},
   {key:"protected",  label:"Protected words",        re:/not brace-protected/i},
+  {key:"allcaps",    label:"ALL-CAPS title",         re:/^Title is ALL-CAPS/i},
   {key:"type",       label:"Unknown type",           re:/^Unknown entry type/i},
   {key:"eventtitle", label:"eventtitle → booktitle", re:/eventtitle/i},
   {key:"verify",     label:"Verification",           re:/^Verification/i},
@@ -2205,27 +2215,58 @@ function deleteEntry(e){
   lintAll(ENTRIES); render();
   toast("Entry deleted");
 }
-/* Merge a duplicate into its counterpart (bibtex-tidy "combine" strategy):
-   copy fields the target lacks, keep the target's key and existing values,
-   then remove the duplicate entry. */
+/* Merge a duplicate into its counterpart. The newer entry's values win: the
+   one with the later year — or, on a year tie, the non-preprint one — keeps
+   its field values and entry type; the other entry only fills fields the
+   winner lacks. The target's citation key survives either way (it came first
+   and is likely the one already cited), and the duplicate is removed. */
+function mergeWinner(src,target){
+  const ys=parseInt(reportYear(src),10)||0, yt=parseInt(reportYear(target),10)||0;
+  if(ys!==yt) return ys>yt?src:target;
+  const ps=isPreprint(src), pt=isPreprint(target);
+  if(ps!==pt) return ps?target:src;
+  return target;
+}
+// Fields that would re-mark a published (non-preprint) merge winner as a
+// preprint if copied over from its preprint duplicate.
+function preprintLeakField(f,v){
+  if(["eprint","eprinttype","archiveprefix","primaryclass"].includes(f)) return true;
+  if(f==="doi") return isPreprintDoi(v);
+  if(["journal","journaltitle","booktitle","howpublished","publisher","note","url"].includes(f)) return isPreprintVenue(v);
+  return false;
+}
 function mergeEntryInto(src,targetKey){
   const target=ENTRIES.find(x=>x!==src && x.key.toLowerCase()===String(targetKey||"").toLowerCase());
   if(!target){ toast(`Entry "${targetKey}" no longer exists`); return; }
-  if(!window.confirm(`Merge "${src.key}" into "${target.key}"?\n\nFields missing in "${target.key}" are copied over, then "${src.key}" is deleted. This can't be undone.`)) return;
-  let added=0;
-  for(const f of Object.keys(src.fields)){
-    if(!cleanField(target.fields[f]) && cleanField(src.fields[f])){
-      target.fields[f]=src.fields[f];
-      if(src.bare&&src.bare[f]) (target.bare=target.bare||{})[f]=true;
-      added++;
-    }
+  const winner=mergeWinner(src,target), loser=winner===src?target:src;
+  if(!window.confirm(`Merge "${src.key}" into "${target.key}"?\n\nField values are kept from "${winner.key}" (newer year, or the published version on a tie); "${loser.key}" only fills in missing fields. The merged entry keeps the key "${target.key}", and "${src.key}" is deleted. This can't be undone.`)) return;
+  // Rebuild the surviving entry from the winner's fields, then fill gaps from
+  // the loser — dropping loser-only preprint markers when the winner is the
+  // published version (they would re-flag the merged entry as a preprint).
+  const guardPreprint=isPreprint(loser)&&!isPreprint(winner);
+  const fields={}, bareMap={};
+  const take=(f,from)=>{ fields[f]=from.fields[f]; if(from.bare&&from.bare[f]) bareMap[f]=true; };
+  for(const f of Object.keys(winner.fields)) if(cleanField(winner.fields[f])) take(f,winner);
+  for(const f of Object.keys(loser.fields)){
+    if(fields[f]!==undefined || !cleanField(loser.fields[f])) continue;
+    if(guardPreprint && preprintLeakField(f,loser.fields[f])) continue;
+    take(f,loser);
   }
+  let changed=(target.type!==winner.type)?1:0;
+  for(const f of new Set([...Object.keys(target.fields),...Object.keys(fields)]))
+    if(target.fields[f]!==fields[f]) changed++;
+  target.type=winner.type; target.fields=fields; target.bare=bareMap;
   const idx=ENTRIES.indexOf(src);
   if(idx>=0) ENTRIES.splice(idx,1);
   OPEN.delete(src.key.toLowerCase());
-  if(added){ target._dirty=true; if(target._verify) pruneResolvedVerify(target,target._verify); }
+  if(changed){
+    target._dirty=true;
+    // pure fill-ins keep the verification cache; overwritten values invalidate it
+    if(winner===target){ if(target._verify) pruneResolvedVerify(target,target._verify); }
+    else delete target._verify;
+  }
   lintAll(ENTRIES); render();
-  toast(`Merged "${src.key}" into "${target.key}"${added?` (${added} field${added===1?"":"s"} copied)`:""}`);
+  toast(`Merged "${src.key}" into "${target.key}" keeping "${winner.key}"'s values${changed?` (${changed} field${changed===1?"":"s"} updated)`:""}`);
 }
 function escapeHtml(s){return (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
 // URLs from the loaded .bib file or API responses become clickable links; only
@@ -2270,9 +2311,11 @@ function diffCodeHtml(original,formatted){
     else{ fmtMarks[j++]=true; }
   }
   const line=(s,cls)=>`<span class="dline${cls?' '+cls:''}">${escapeHtml(s)}</span>`;
+  // .dwrap sizes itself to the widest line so colored lines span the full
+  // scroll width of the pane, not just the initially visible part
   return {
-    original:a.map((s,k)=>line(s,origMarks[k]?"rm":"")).join(""),
-    formatted:b.map((s,k)=>line(s,fmtMarks[k]?"add":"")).join("")
+    original:`<div class="dwrap">${a.map((s,k)=>line(s,origMarks[k]?"rm":"")).join("")}</div>`,
+    formatted:`<div class="dwrap">${b.map((s,k)=>line(s,fmtMarks[k]?"add":"")).join("")}</div>`
   };
 }
 
@@ -2504,8 +2547,8 @@ function buildConfigUI(){
     <div class="row"><input type="checkbox" id="fm_lcf" ${C.formatting.lowercaseFieldNames?"checked":""}><label>Lowercase field names</label></div>
     <div class="row"><input type="checkbox" id="fm_tc" ${C.formatting.trailingComma?"checked":""}><label>Trailing comma</label></div>
     <div class="row"><input type="checkbox" id="fm_ttl" ${C.formatting.titlecaseTitles?"checked":""}><label>Title-Case titles (protected words keep their casing)</label></div>
-    <div class="row"><input type="checkbox" id="fm_dblbrace" ${C.formatting.stripDoubleBraces?"checked":""}><label>Strip redundant double braces on import (<code class="k">{{X}}</code> → <code class="k">{X}</code>)</label></div>
-    <div class="row"><input type="checkbox" id="fm_allcaps" ${C.formatting.dropAllCaps?"checked":""}><label>Convert ALL-CAPS values to Title Case on import (Roman numerals kept)</label></div>
+    <div class="row"><input type="checkbox" id="fm_dblbrace" ${C.formatting.stripDoubleBraces?"checked":""}><label>Strip redundant double braces on import (<code class="k">{{X Y}}</code> → <code class="k">{X Y}</code>)</label></div>
+    <div class="row"><input type="checkbox" id="fm_allcaps" ${C.formatting.dropAllCaps?"checked":""}><label>Suggest Title Case for ALL-CAPS titles</label></div>
     <div class="row"><input type="checkbox" id="fm_drop_url_doi" ${C.formatting.dropUrlWhenDoi?"checked":""}><label>Drop <code class="k">url</code> when <code class="k">doi</code> exists</label></div>
     <div class="field" style="margin-top:12px"><label>Field order</label>
       <textarea id="fm_order" rows="2">${esc(C.formatting.fieldOrder.join(", "))}</textarea></div>

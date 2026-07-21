@@ -132,7 +132,10 @@
   .fixbtn.auto:hover{background:var(--accent-soft)}
   pre.code{font-family:var(--mono);font-size:12.5px;background:#f5f5f1;border:1px solid var(--line);
     border-radius:8px;padding:11px 13px;overflow-x:auto;line-height:1.55;white-space:pre}
+  /* .dwrap grows to the widest line (never narrower than the pane), so the
+     rm/add backgrounds span the full scroll width, not just the visible part */
   pre.code.diff{padding:7px 0}
+  .dwrap{width:max-content;min-width:100%}
   .dline{display:block;padding:0 13px;min-height:1.55em}
   .dline.rm{background:var(--err-bg);color:#7e2424}
   .dline.add{background:var(--ok-bg);color:#255238}
