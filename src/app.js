@@ -54,7 +54,9 @@ const DEFAULT_CONFIG = {
       "pubstate", "eprinttype", "eprintclass", "primaryclass", "shortjournal", "shorttitle", "pmid", "pst", "pmc", "copyright",
       "timestamp"],  // remove these fields from the working copy
     dropUrlWhenDoi: true,      // remove url when doi is present
-    titlecaseTitles: false     // Preserve title spelling by default; opt in to Title-Case
+    titlecaseTitles: false,    // Preserve title spelling by default; opt in to Title-Case
+    stripDoubleBraces: true,   // {{Journal of Tea}} → {Journal of Tea} on import
+    dropAllCaps: true          // JOURNAL OF TEA → Journal of Tea on import (Roman numerals kept)
   },
   ordering: {
     sortBy: "key",             // "key" | "year" | "author" | "type" | "none"
@@ -66,6 +68,7 @@ const DEFAULT_CONFIG = {
     doiFormat: true,              // doi must not be a full URL
     detectDuplicateKeys: true,
     detectDuplicateDOIs: true,
+    detectDuplicateEntries: true, // same first author + similar title under two keys
     warnUnknownFields: true,
     monthAbbrev: true,            // month should be an integer 1..12
     dateToYear: true              // biblatex date should be reduced to a plain year
@@ -243,11 +246,58 @@ function parseBib(text){
 
 /* ---------- 4. LINTER -------------------------------------- */
 function lintAll(entries){
-  const keySeen={}, doiSeen={}, genSeen={};
-  // all actual keys up front, so a generated key can be checked against every
-  // OTHER entry's existing key regardless of processing order
-  const actualKeys={};
-  for(const x of entries){ const k=x.key.toLowerCase(); if(!(k in actualKeys)) actualKeys[k]=x.key; }
+  const keySeen={}, doiSeen={};
+  // Fuzzy duplicate detection (computed first — it feeds the key suggestions
+  // below): same first author + near-identical title means the same work is
+  // probably cited under two keys. Distinct `number` fields exempt numbered
+  // reports/parts that legitimately share a title; conflicting first names
+  // ("Smith, Ann" vs "Smith, Bob") exempt homonymous authors.
+  const DUP_TITLE_SIM=0.85;
+  const dupOf=new Map();   // later entry → earlier entry it duplicates
+  if(CONFIG.checks.detectDuplicateEntries){
+    const buckets=new Map();   // first-author last name → entries seen so far
+    for(const x of entries){
+      const first=authorPartsFromBib(x.fields.author||x.fields.editor||"")[0]||null;
+      const title=cleanField(x.fields.title);
+      if(!first || !title) continue;
+      const num=cleanField(x.fields.number);
+      const bucket=buckets.get(first.last)||[];
+      for(const prev of bucket){
+        if(prev.num && num && prev.num!==num) continue;
+        if(!authorFirstMatches(prev.first,first)) continue;
+        if(titleSimilarity(prev.title,title).passes(DUP_TITLE_SIM)){ dupOf.set(x,prev.e); break; }
+      }
+      bucket.push({e:x,first,title,num});
+      buckets.set(first.last,bucket);
+    }
+  }
+  // Collision-free styled-key suggestions (JabRef-style disambiguation): an
+  // entry whose key already matches its generated key keeps it; every other
+  // suggestion gets a/b/c… appended until it clashes with neither an existing
+  // key nor another suggestion. Entries flagged as possible duplicates get NO
+  // suggestion — disambiguating a duplicate's key would entrench it (merge or
+  // delete is the fix); the survivor gets a clean suggestion on the next pass.
+  const suggestedKey=new Map();
+  if(CONFIG.keyStyle.mode!=="off"){
+    const taken=new Set(entries.map(x=>x.key.toLowerCase()));
+    const claimed=new Set();
+    const pending=[];
+    for(const x of entries){
+      const base=makeKey(x);
+      if(!base) continue;
+      if(x.key.toLowerCase()===base.toLowerCase()){ claimed.add(base.toLowerCase()); suggestedKey.set(x,x.key); }
+      else if(!dupOf.has(x)) pending.push([x,base]);
+    }
+    for(const [x,base] of pending){
+      let cand=base;
+      for(let i=0; claimed.has(cand.toLowerCase()) ||
+            (taken.has(cand.toLowerCase()) && cand.toLowerCase()!==x.key.toLowerCase()); i++){
+        cand=base+(i<26?String.fromCharCode(97+i):String(i+1));
+      }
+      claimed.add(cand.toLowerCase());
+      suggestedKey.set(x,cand);
+    }
+  }
   for(const e of entries){
     e.issues=[];
     const C=CONFIG, ch=C.checks;
@@ -360,34 +410,29 @@ function lintAll(entries){
             [{label:"Brace it",kind:"setField",field:"title",value:protectWordsInTitle(e.fields.title),auto:true}]);
       }
     }
-    // citation key style
+    // citation key style — the suggested key is pre-disambiguated, so renaming
+    // (manually or via Auto-fix) can never collide with another entry's key
     if(CONFIG.keyStyle.mode!=="off"){
-      const want=makeKey(e);
+      const want=suggestedKey.get(e)||"";
       if(want && want.toLowerCase()!==e.key.toLowerCase())
         add("warn",`Key "${e.key}" ≠ expected style "${want}"`,want,
           [{label:`Rename key → ${want}`,kind:"setKey",value:want,auto:!!CONFIG.autofix.renameKeys}]);
     }
-    // duplicates — check both the existing key and the key the formatter will generate,
-    // since two distinct source keys can collapse to the same generated key on export.
     if(ch.detectDuplicateKeys){
       const lk=e.key.toLowerCase();
       if(keySeen[lk]) add("err",`Duplicate citation key "${e.key}"`);
       keySeen[lk]=true;
-      if(CONFIG.keyStyle.mode!=="off"){
-        const want=makeKey(e), gk=want.toLowerCase();
-        if(gk!==lk){
-          // renaming this entry to its styled key must not clash with another
-          // entry's existing key, nor with an earlier entry's generated key
-          const clash=(gk in actualKeys)?actualKeys[gk]:genSeen[gk];
-          if(clash) add("err",`Generated key "${want}" collides with ${clash} after reformatting`);
-        }
-        if(!(gk in genSeen)) genSeen[gk]=e.key;
-      }
     }
     if(ch.detectDuplicateDOIs && e.fields.doi){
       const d=normDoi(e.fields.doi);
       if(doiSeen[d]) add("warn",`Duplicate DOI "${d}" (also in ${doiSeen[d]})`);
       else doiSeen[d]=e.key;
+    }
+    if(ch.detectDuplicateEntries && dupOf.has(e)){
+      const other=dupOf.get(e);
+      add("warn",`Possible duplicate of "${other.key}" (same first author, similar title)`,"",
+        [{label:`Merge into "${other.key}"`,kind:"mergeInto",target:other.key},
+         {label:"Delete this entry",kind:"deleteEntry"}]);
     }
     const vIssue=verificationIssue(e);
     if(vIssue) add(vIssue.sev,vIssue.msg);
@@ -563,6 +608,47 @@ function applyDropFields(entries){
   }
   return removed;
 }
+/* Value normalizations applied on import and re-lint (Formatting toggles):
+   peel redundant whole-value double braces ({{X}} → {X}) and Title-Case
+   ALL-CAPS values in presentational fields. Bare values (macros/concats) and
+   verbatim-ish fields (doi, url, pages, …) are never touched. */
+const ALLCAPS_FIELDS=new Set(["title","booktitle","journal","journaltitle","series",
+  "publisher","author","editor","address","location","institution","school","organization"]);
+function applyImportNormalizations(entries){
+  const F=CONFIG.formatting;
+  if(!F.stripDoubleBraces && !F.dropAllCaps) return 0;
+  let changed=0;
+  for(const e of entries){
+    let entryChanged=0;
+    for(const f of Object.keys(e.fields)){
+      if(e.bare&&e.bare[f]) continue;
+      let v=e.fields[f];
+      if(F.stripDoubleBraces){
+        // {{Journal of Tea}} parses to "{Journal of Tea}" — peel brace layers
+        // that span the WHOLE value (the serializer re-adds the outer pair).
+        // Partial groups like "{Bayesian} inference" are protection, not waste.
+        while(wholeValueBraceGroup(v)) v=v.slice(1,-1);
+      }
+      if(F.dropAllCaps && ALLCAPS_FIELDS.has(f) && /[A-Z]/.test(v) && !/[a-z]/.test(v))
+        v=titleCase(v);   // keeps {braced} segments, stopwords ("and"!) and Roman numerals
+      if(v!==e.fields[f]){ e.fields[f]=v; entryChanged++; }
+    }
+    if(entryChanged){ e._dirty=true; changed+=entryChanged; }
+  }
+  return changed;
+}
+// true when the value is one balanced {…} group covering the entire string
+function wholeValueBraceGroup(v){
+  if(v.length<2 || v[0]!=="{" || v[v.length-1]!=="}") return false;
+  let depth=0;
+  for(let i=0;i<v.length;i++){
+    if(v[i]==="{") depth++;
+    else if(v[i]==="}"){ depth--; if(depth===0) return i===v.length-1; }
+  }
+  return false;
+}
+// drop configured fields, then normalize values — the standard import pipeline
+function normalizeEntries(list){ applyDropFields(list); applyImportNormalizations(list); }
 function serializeEntry(e,useFixedKey,overrideKey){
   const F=CONFIG.formatting;
   const type=F.lowercaseType?e.type.toLowerCase():e.type;
@@ -611,7 +697,14 @@ function titleCase(s){
   });
 }
 function titleCaseWord(w){
-  return w.split("-").map(part=>part.charAt(0).toUpperCase()+part.slice(1).toLowerCase()).join("-");
+  return w.split("-").map(part=>{
+    if(isRomanNumeral(part)) return part;   // PART III stays III, not Iii
+    return part.charAt(0).toUpperCase()+part.slice(1).toLowerCase();
+  }).join("-");
+}
+function isRomanNumeral(s){
+  return /^[MDCLXVI]+$/.test(s) &&
+    /^M{0,4}(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})$/.test(s);
 }
 function sortEntries(entries){
   const o=CONFIG.ordering; if(o.sortBy==="none")return entries;
@@ -1705,7 +1798,7 @@ function readFile(f){
 function loadText(text){
   const {entries,preamble}=parseBib(text);
   ENTRIES=entries; RAW_PREAMBLE=preamble;
-  applyDropFields(ENTRIES);
+  normalizeEntries(ENTRIES);
   lintAll(ENTRIES);
   render();
 }
@@ -1745,8 +1838,9 @@ function entryLetter(e){
 const ISSUE_CATEGORIES=[
   {key:"required",   label:"Missing field",          re:/^Missing required field|^Missing journal; DOI\/URL looks like arXiv/i},
   {key:"unknown",    label:"Unexpected field",       re:/^Unexpected field/i},
-  {key:"dupkey",     label:"Duplicate key",          re:/^Duplicate citation key|collides with/i},
+  {key:"dupkey",     label:"Duplicate key",          re:/^Duplicate citation key/i},
   {key:"dupdoi",     label:"Duplicate DOI",          re:/^Duplicate DOI/i},
+  {key:"dupentry",   label:"Duplicate entry",        re:/^Possible duplicate/i},
   {key:"keystyle",   label:"Key style",              re:/expected style/i},
   {key:"year",       label:"Year format",            re:/^Year is not a 4-digit/i},
   {key:"date",       label:"Date field",             re:/date field|and date \(|Redundant date/i},
@@ -2033,7 +2127,7 @@ function removeFieldEverywhere(field){
   const affected=ENTRIES.filter(e=>name in e.fields).length;
   if(!CONFIG.formatting.dropFields.some(x=>x.toLowerCase()===name))
     CONFIG.formatting.dropFields.push(name);
-  applyDropFields(ENTRIES);
+  normalizeEntries(ENTRIES);
   lintAll(ENTRIES); render();
   toast(affected
     ? `Removed "${name}" from ${affected} ${affected===1?"entry":"entries"} (added to dropped fields)`
@@ -2042,6 +2136,8 @@ function removeFieldEverywhere(field){
 function applyFix(e,act){
   if(!act) return;
   if(act.kind==="removeFieldAll"){ removeFieldEverywhere(act.field); return; }
+  if(act.kind==="mergeInto"){ mergeEntryInto(e,act.target); return; }
+  if(act.kind==="deleteEntry"){ deleteEntry(e); return; }
   const oldKey=e.key.toLowerCase();
   const changed=mutateEntry(e,act);
   if(changed){
@@ -2088,7 +2184,7 @@ function applyEdit(e,text){
   const ne=parsed[0];
   const idx=ENTRIES.indexOf(e);
   if(idx<0){ toast("Entry no longer exists"); return; }
-  applyDropFields([ne]);
+  normalizeEntries([ne]);
   ne._orig=e._orig;   // keep the pristine original in the "Original" pane
   ne._dirty=true;
   ne._resolved=false;
@@ -2108,6 +2204,28 @@ function deleteEntry(e){
   ENTRIES.splice(idx,1); OPEN.delete(e.key.toLowerCase());
   lintAll(ENTRIES); render();
   toast("Entry deleted");
+}
+/* Merge a duplicate into its counterpart (bibtex-tidy "combine" strategy):
+   copy fields the target lacks, keep the target's key and existing values,
+   then remove the duplicate entry. */
+function mergeEntryInto(src,targetKey){
+  const target=ENTRIES.find(x=>x!==src && x.key.toLowerCase()===String(targetKey||"").toLowerCase());
+  if(!target){ toast(`Entry "${targetKey}" no longer exists`); return; }
+  if(!window.confirm(`Merge "${src.key}" into "${target.key}"?\n\nFields missing in "${target.key}" are copied over, then "${src.key}" is deleted. This can't be undone.`)) return;
+  let added=0;
+  for(const f of Object.keys(src.fields)){
+    if(!cleanField(target.fields[f]) && cleanField(src.fields[f])){
+      target.fields[f]=src.fields[f];
+      if(src.bare&&src.bare[f]) (target.bare=target.bare||{})[f]=true;
+      added++;
+    }
+  }
+  const idx=ENTRIES.indexOf(src);
+  if(idx>=0) ENTRIES.splice(idx,1);
+  OPEN.delete(src.key.toLowerCase());
+  if(added){ target._dirty=true; if(target._verify) pruneResolvedVerify(target,target._verify); }
+  lintAll(ENTRIES); render();
+  toast(`Merged "${src.key}" into "${target.key}"${added?` (${added} field${added===1?"":"s"} copied)`:""}`);
 }
 function escapeHtml(s){return (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
 // URLs from the loaded .bib file or API responses become clickable links; only
@@ -2324,10 +2442,10 @@ $("#btnConfig").onclick=()=>{buildConfigUI();modal.classList.add("open");};
 $("#cfgClose").onclick=()=>modal.classList.remove("open");
 modal.onclick=e=>{if(e.target===modal)modal.classList.remove("open");};
 $("#cfgReset").onclick=()=>{CONFIG=structuredClone(DEFAULT_CONFIG);buildConfigUI();
-  if(ENTRIES.length){applyDropFields(ENTRIES);lintAll(ENTRIES);render();}toast("Config reset to defaults");};
+  if(ENTRIES.length){normalizeEntries(ENTRIES);lintAll(ENTRIES);render();}toast("Config reset to defaults");};
 $("#cfgSave").onclick=()=>{
   readConfigUI();
-  if(ENTRIES.length){applyDropFields(ENTRIES);lintAll(ENTRIES);render();}
+  if(ENTRIES.length){normalizeEntries(ENTRIES);lintAll(ENTRIES);render();}
   modal.classList.remove("open");toast("Re-linted with current config");
 };
 $("#cfgExportJson").onclick=()=>{
@@ -2339,7 +2457,7 @@ $("#cfgExportJson").onclick=()=>{
 $("#cfgImportJson").onclick=()=>$("#cfgFile").click();
 $("#cfgFile").onchange=e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();
   r.onload=()=>{try{CONFIG=migrateConfig(JSON.parse(r.result));buildConfigUI();
-    if(ENTRIES.length){applyDropFields(ENTRIES);lintAll(ENTRIES);render();}toast("Config imported & applied");}catch(x){toast("Invalid JSON");}};r.readAsText(f);};
+    if(ENTRIES.length){normalizeEntries(ENTRIES);lintAll(ENTRIES);render();}toast("Config imported & applied");}catch(x){toast("Invalid JSON");}};r.readAsText(f);};
 
 function buildConfigUI(){
   const C=CONFIG;
@@ -2386,6 +2504,8 @@ function buildConfigUI(){
     <div class="row"><input type="checkbox" id="fm_lcf" ${C.formatting.lowercaseFieldNames?"checked":""}><label>Lowercase field names</label></div>
     <div class="row"><input type="checkbox" id="fm_tc" ${C.formatting.trailingComma?"checked":""}><label>Trailing comma</label></div>
     <div class="row"><input type="checkbox" id="fm_ttl" ${C.formatting.titlecaseTitles?"checked":""}><label>Title-Case titles (protected words keep their casing)</label></div>
+    <div class="row"><input type="checkbox" id="fm_dblbrace" ${C.formatting.stripDoubleBraces?"checked":""}><label>Strip redundant double braces on import (<code class="k">{{X}}</code> → <code class="k">{X}</code>)</label></div>
+    <div class="row"><input type="checkbox" id="fm_allcaps" ${C.formatting.dropAllCaps?"checked":""}><label>Convert ALL-CAPS values to Title Case on import (Roman numerals kept)</label></div>
     <div class="row"><input type="checkbox" id="fm_drop_url_doi" ${C.formatting.dropUrlWhenDoi?"checked":""}><label>Drop <code class="k">url</code> when <code class="k">doi</code> exists</label></div>
     <div class="field" style="margin-top:12px"><label>Field order</label>
       <textarea id="fm_order" rows="2">${esc(C.formatting.fieldOrder.join(", "))}</textarea></div>
@@ -2406,6 +2526,7 @@ function buildConfigUI(){
     ${chk("dateToYear","Reduce biblatex date to a plain year")}
     ${chk("detectDuplicateKeys","Detect duplicate keys")}
     ${chk("detectDuplicateDOIs","Detect duplicate DOIs")}
+    ${chk("detectDuplicateEntries","Detect duplicate entries (same first author, similar title)")}
     ${chk("warnUnknownFields","Warn on unexpected fields")}
   </div></details>
 
@@ -2474,6 +2595,8 @@ function readConfigUI(silent){
   C.formatting.lowercaseFieldNames=g("fm_lcf").checked;
   C.formatting.trailingComma=g("fm_tc").checked;
   C.formatting.titlecaseTitles=g("fm_ttl").checked;
+  C.formatting.stripDoubleBraces=g("fm_dblbrace").checked;
+  C.formatting.dropAllCaps=g("fm_allcaps").checked;
   C.formatting.dropUrlWhenDoi=g("fm_drop_url_doi").checked;
   C.formatting.fieldOrder=splitList(g("fm_order").value);
   C.formatting.dropFields=splitList(g("fm_drop").value);
