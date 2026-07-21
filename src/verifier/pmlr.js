@@ -17,21 +17,24 @@ export function createPmlrSource({getConfig, parseBib, titleSimilarity}){
         if(!seen.has(id)){ seen.add(id); ids.push(id); }
       }
       return ids;
-    })();
+    })().catch(err=>{ cache.volumes=null; throw err; }); // don't cache a failed index fetch
     return cache.volumes;
   }
 
   async function volumeRecords(id){
     if(cache.records.has(id)) return cache.records.get(id);
     const promise=(async()=>{
-      try{
-        const bib=await getText(`${PMLR_BASE}/${id}/assets/bib/bibliography.bib`);
-        if(!bib) return [];
-        return parseBib(bib).entries
-          .filter(e=>e.type==="inproceedings" && e.fields.title)
-          .map(normPmlrEntry);
-      }catch(err){ return []; }
-    })();
+      const bib=await getText(`${PMLR_BASE}/${id}/assets/bib/bibliography.bib`);
+      if(!bib) return [];
+      return parseBib(bib).entries
+        .filter(e=>e.type==="inproceedings" && e.fields.title)
+        .map(normPmlrEntry);
+    })().catch(err=>{
+      // transient failure (rate limit, outage): don't cache an empty volume —
+      // surface the error so this shows up as "source unavailable", not "not found"
+      cache.records.delete(id);
+      throw err;
+    });
     cache.records.set(id,promise);
     return promise;
   }

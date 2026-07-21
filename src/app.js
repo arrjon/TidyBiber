@@ -81,8 +81,8 @@ const DEFAULT_CONFIG = {
     sources: ["crossref","pubmed","openalex","semanticscholar","datacite","dblp","pmlr"],
     mailto: "",                   // optional: your email for Crossref/OpenAlex "polite pool" (faster, nicer). Blank = anonymous access.
     titleSimThreshold: 0.6,       // below this Jaccard similarity → flag possible mismatch
-                                  // (0.6 matches the floor used for published-version lookup;
-                                  //  weak title-only DOI suggestions need 0.75)
+                                  // (published-version lookup and title-only DOI suggestions
+                                  //  additionally enforce a stricter 0.75 minimum)
     delayMs: 120,                 // pause between entries to stay polite to the APIs
     checkUrls: true,              // ping the url field to detect dead links
     urlTimeoutMs: 8000,           // give up on a url after this long
@@ -139,8 +139,11 @@ function mergeDeep(t,s){
 }
 
 /* ---------- 3. BIBTEX PARSER ------------------------------- */
-/* Hand-written tokenizer: handles nested braces, quoted values,
-   @string/@preamble/@comment, and concatenation is preserved as-is. */
+/* Hand-written tokenizer: handles nested braces, quoted values, and
+   @string/@preamble/@comment. Bare values (numbers, @string/month macros,
+   and # concatenations) are tagged so the serializer re-emits them verbatim
+   without braces — bracing `journal = jmlr` would turn a macro reference
+   into the literal string "jmlr". */
 function parseBib(text){
   const entries=[]; const preambleParts=[];
   let i=0; const n=text.length;
@@ -174,7 +177,7 @@ function parseBib(text){
     skipWs();
     let key="";
     while(i<n && text[i]!=="," && !/\s/.test(text[i]) && text[i]!==closer) key+=text[i++];
-    const fields=[]; const order=[];
+    const fields=[];
     skipWs();
     while(i<n && text[i]!==closer){
       if(text[i]===","){ i++; skipWs(); continue; }
@@ -186,35 +189,54 @@ function parseBib(text){
         continue;
       }
       i++; skipWs(); // past =
-      let val="", rawval="";
+      let val="", kind="bare";
       if(text[i]==="{"){
-        let depth=0;
+        kind="brace";
+        let depth=0, rawval="";
         do{
           if(text[i]==="{")depth++; else if(text[i]==="}")depth--;
-          rawval+=text[i]; if(!(depth===0)) {} i++;
+          rawval+=text[i]; i++;
         }while(i<n && depth>0);
         val=rawval.slice(1,-1);
       }else if(text[i]==='"'){
+        kind="quote";
         i++; let depth=0;
         while(i<n){
           if(text[i]==="{")depth++; else if(text[i]==="}")depth--;
           else if(text[i]==='"'&&depth===0){ i++; break; }
-          val+=text[i]; rawval+=text[i]; i++;
+          val+=text[i]; i++;
         }
-      }else{ // bareword / number / concat — read to comma or close
-        while(i<n && text[i]!=="," && text[i]!==closer){ val+=text[i]; rawval+=text[i]; i++; }
+      }else{ // bareword / number / macro / # concatenation — read to a top-level comma
+        // or the entry closer; commas inside quoted or braced concat parts don't count.
+        let inQuote=false, depth=0;
+        while(i<n){
+          const c=text[i];
+          if(inQuote){
+            if(c==="{")depth++; else if(c==="}")depth--;
+            else if(c==='"'&&depth===0) inQuote=false;
+          }
+          else if(c==='"') inQuote=true;
+          else if(c==="{") depth++;
+          else if(c==="}"){ if(depth===0) break; depth--; }
+          else if(depth===0 && (c===","||c===closer)) break;
+          val+=c; i++;
+        }
         val=val.trim();
       }
       const fn=fname.trim().toLowerCase();
-      if(fn){ fields.push({name:fn, value:val.trim()}); order.push(fn); }
+      if(fn) fields.push({name:fn, value:val.trim(), kind});
       skipWs();
     }
     if(text[i]===closer) i++;
-    const fmap={}; for(const f of fields) if(!(f.name in fmap)) fmap[f.name]=f.value;
+    const fmap={}, bmap={};
+    for(const f of fields) if(!(f.name in fmap)){
+      fmap[f.name]=f.value;
+      if(f.kind==="bare") bmap[f.name]=true;
+    }
     const raw=text.slice(at,i);
-    // _orig = pristine source, never mutated (shown in "As parsed").
-    // _src  = current working source, updated by edits/autofixes (shown in the editor).
-    entries.push({type, key:key.trim(), fields:fmap, order, _src:raw, _orig:raw});
+    // _orig = pristine source, never mutated (shown in the "Original" pane).
+    // bare  = fields whose value was a bareword/macro/concat; serialized without braces.
+    entries.push({type, key:key.trim(), fields:fmap, bare:bmap, _orig:raw});
   }
   return {entries, preamble:preambleParts.join("\n\n")};
 }
@@ -222,6 +244,10 @@ function parseBib(text){
 /* ---------- 4. LINTER -------------------------------------- */
 function lintAll(entries){
   const keySeen={}, doiSeen={}, genSeen={};
+  // all actual keys up front, so a generated key can be checked against every
+  // OTHER entry's existing key regardless of processing order
+  const actualKeys={};
+  for(const x of entries){ const k=x.key.toLowerCase(); if(!(k in actualKeys)) actualKeys[k]=x.key; }
   for(const e of entries){
     e.issues=[];
     const C=CONFIG, ch=C.checks;
@@ -323,10 +349,12 @@ function lintAll(entries){
           fixed?[{label:`Fix → ${fixed}`,kind:"setField",field:"month",value:fixed,auto:true}]:[]);
       }
     }
-    // protected words not braced in title
+    // protected words not braced in title — case-insensitive, matching what the
+    // formatter (protectWordsInTitle) rewrites, so every silent casing change
+    // the export would make is also surfaced as a lint issue
     if(e.fields.title){
       for(const w of CONFIG.protectedWords){
-        const re=new RegExp(`(^|[^{\\w])(${escapeRe(w)})([^}\\w]|$)`,"g");
+        const re=new RegExp(`(^|[^{\\w])(${escapeRe(w)})([^}\\w]|$)`,"gi");
         if(re.test(e.fields.title))
           add("warn",`"${w}" in title is not brace-protected (casing may be lost)`,"{"+w+"}",
             [{label:"Brace it",kind:"setField",field:"title",value:protectWordsInTitle(e.fields.title),auto:true}]);
@@ -346,11 +374,14 @@ function lintAll(entries){
       if(keySeen[lk]) add("err",`Duplicate citation key "${e.key}"`);
       keySeen[lk]=true;
       if(CONFIG.keyStyle.mode!=="off"){
-        const gk=makeKey(e).toLowerCase();
+        const want=makeKey(e), gk=want.toLowerCase();
         if(gk!==lk){
-          if(genSeen[gk]) add("err",`Generated key "${makeKey(e)}" collides with ${genSeen[gk]} after reformatting`);
-          else genSeen[gk]=e.key;
+          // renaming this entry to its styled key must not clash with another
+          // entry's existing key, nor with an earlier entry's generated key
+          const clash=(gk in actualKeys)?actualKeys[gk]:genSeen[gk];
+          if(clash) add("err",`Generated key "${want}" collides with ${clash} after reformatting`);
         }
+        if(!(gk in genSeen)) genSeen[gk]=e.key;
       }
     }
     if(ch.detectDuplicateDOIs && e.fields.doi){
@@ -365,7 +396,7 @@ function lintAll(entries){
   }
   return entries;
 }
-const VERIFY_PROBLEM_RE=/mismatch|differs|fabrication|Missing|Year:|author:|Author list|Journal\/venue:|abbreviated|Pages:|unreachable|timed out|Published version|Preprint/i;
+const VERIFY_PROBLEM_RE=/mismatch|differs|fabrication|resolves to a different|Missing|Year:|author:|Author list|Journal\/venue:|abbreviated|Pages:|unreachable|timed out|Published version|Preprint/i;
 const REPORT_CACHE_START="-----BEGIN TIDYBIBER VERIFICATION CACHE-----";
 const REPORT_CACHE_END="-----END TIDYBIBER VERIFICATION CACHE-----";
 function verificationIssue(e){
@@ -525,10 +556,9 @@ function applyDropFields(entries){
     for(const f of Object.keys(e.fields)){
       const name=f.toLowerCase();
       if(drops.has(name) || (dropUrlWhenDoi && name==="url" && !!e.fields.doi)){
-        delete e.fields[f]; removed++; removedFromEntry++;
+        delete e.fields[f]; if(e.bare) delete e.bare[f]; removed++; removedFromEntry++;
       }
     }
-    e.order=e.order.filter(f=>!shouldDropField(e,f));
     if(removedFromEntry){ e._dirty=true; delete e._verify; }
   }
   return removed;
@@ -544,17 +574,24 @@ function serializeEntry(e,useFixedKey,overrideKey){
   const close=F.quoteStyle==="quotes"?'"':"}";
   const lines=names.map((fn,idx)=>{
     let v=e.fields[fn];
-    if(fn==="title"){
-      if(F.titlecaseTitles) v=titleCase(v);
-      v=protectWordsInTitle(v);
+    // bare values (numbers, @string/month macros, # concatenations) are kept
+    // verbatim and unquoted — bracing them would change their meaning.
+    const bare=!!(e.bare&&e.bare[fn]);
+    if(!bare){
+      if(fn==="title"){
+        if(F.titlecaseTitles) v=titleCase(v);
+        v=protectWordsInTitle(v);
+      }
+      if(fn==="doi" && CONFIG.checks.doiFormat) v=normDoi(v);
+      if(fn==="pages" && CONFIG.checks.requirePageRangeDash)
+        v=canonicalPages(v);
     }
-    if(fn==="doi" && CONFIG.checks.doiFormat) v=normDoi(v);
-    if(fn==="pages" && CONFIG.checks.requirePageRangeDash)
-      v=canonicalPages(v);
     const name=F.lowercaseFieldNames?fn.toLowerCase():fn;
     const namePadded=F.alignEquals?name.padEnd(pad):name;
     const comma=(idx<names.length-1||F.trailingComma)?",":"";
-    return `${ind}${namePadded} = ${open}${v}${close}${comma}`;
+    return bare
+      ? `${ind}${namePadded} = ${v}${comma}`
+      : `${ind}${namePadded} = ${open}${v}${close}${comma}`;
   });
   return `@${type}{${key},\n${lines.join("\n")}\n}`;
 }
@@ -581,7 +618,8 @@ function sortEntries(entries){
   const dir=o.direction==="desc"?-1:1;
   const keyf={
     key:e=>e.key.toLowerCase(),
-    year:e=>(e.fields.year||"").padStart(4,"0"),
+    // reportYear handles braces and biblatex date-only entries ("{2020}", date={2020-01})
+    year:e=>reportYear(e)||"0000",
     author:e=>firstAuthorLast(e.fields.author||e.fields.editor||"").toLowerCase(),
     type:e=>e.type
   }[o.sortBy]||(e=>e.key);
@@ -592,7 +630,6 @@ function isChanged(e){ return !!e._dirty; }
 // "not found" = online verification ran but no enabled database had a match. Its own
 // category next to "clean"/"modified", not an error. Hidden while an entry is resolved.
 function isNotFound(e){ return !e._resolved && !!e._verify && e._verify.status==="notfound"; }
-function refreshEntrySource(e){ e._src=serializeEntry(e,false); }
 function visibleErrCount(e){ return e._resolved ? 0 : e.errCount; }
 function visibleWarnCount(e){ return e._resolved ? 0 : e.warnCount; }
 function exportBib(){
@@ -792,6 +829,12 @@ function importedVerifyNoteResolved(e,v,note){
   if(m) return cleanField(e.fields.url)!==m[1].trim();
   if(/^Low title similarity/i.test(n) && v.matchedTitle)
     return titleSimilarity(cleanField(e.fields.title),v.matchedTitle).passes(CONFIG.verification.titleSimThreshold);
+  if(/^DOI resolves to a different paper/i.test(n)){
+    // resolved once the doi was changed/removed, or the title now matches the record
+    const sameDoi=!!(curDoi && foundDoi && curDoi===foundDoi);
+    const titleNowMatches=!!(v.matchedTitle && titleSimilarity(cleanField(e.fields.title),v.matchedTitle).passes(CONFIG.verification.titleSimThreshold));
+    return !sameDoi || titleNowMatches;
+  }
   m=n.match(/^First author: file=.* vs .*=([^\s]+)$/);
   if(m) return authorLastMatches(normAuthorLast(entryFirstAuthorLast(e)),normAuthorLast(m[1]));
   m=n.match(/^Missing author; found (.+)$/);
@@ -917,7 +960,7 @@ function arxivId(e){
   // arxiv DOI: 10.48550/arXiv.2103.12345
   if(f.doi){ const m=f.doi.match(/10\.48550\/arxiv\.([^\s"',}]+)/i); if(m)return cleanArxivId(m[1]); }
   // any url/note/howpublished pointing at arxiv.org/abs/<id>
-  for(const k of ["url","note","howpublished","journal"]){
+  for(const k of ["url","note","howpublished","journal","journaltitle"]){
     if(f[k]){ const m=f[k].match(/arxiv\.org\/(?:abs|pdf)\/([^\s"',}]+)/i); if(m)return cleanArxivId(m[1]); }
   }
   return null;
@@ -927,7 +970,9 @@ function cleanArxivId(id){
 }
 function isPreprint(e){
   const f=e.fields;
-  const preprintText=(f.archiveprefix||"")+(f.howpublished||"")+(f.note||"")+(f.journal||"")+(f.url||"");
+  // include journaltitle/booktitle — entryVenue reads them, so preprint detection must too
+  const preprintText=(f.archiveprefix||"")+(f.howpublished||"")+(f.note||"")+(f.journal||"")+
+    (f.journaltitle||"")+(f.booktitle||"")+(f.url||"");
   return !!arxivId(e) ||
     /arxiv|preprint|biorxiv|bioarxiv|medrxiv|openrxiv|ssrn|research\s*square/i.test(preprintText) ||
     (e.fields.doi&&isPreprintDoi(e.fields.doi));
@@ -1026,12 +1071,20 @@ function authorLastMatches(a,b){
 }
 function authorFirstMatches(a,b){
   if(!a.first || !b.first) return true;
-  if(a.first===b.first) return true;
+  // Initial sequences must agree first — "J. D." vs "J. P." is a conflict even
+  // though the leading token ("J") matches on both sides.
   if(a.initials && b.initials){
     const [short,long]=a.initials.length<=b.initials.length?[a.initials,b.initials]:[b.initials,a.initials];
-    return short.length===1 ? short[0]===long[0] : long.startsWith(short);
+    const initialsOk=short.length===1 ? short[0]===long[0] : long.startsWith(short);
+    if(!initialsOk) return false;
   }
-  return (a.firstInitial || b.firstInitial) && a.first[0]===b.first[0];
+  if(a.first===b.first) return true;
+  // Both names spelled out: same person only when one is a prefix of the other
+  // (Jon/Jonathan). First-letter matching is far too lax here — "Jonathan" vs
+  // "James" must count as a conflict.
+  if(!a.firstInitial && !b.firstInitial)
+    return a.first.startsWith(b.first) || b.first.startsWith(a.first);
+  return true; // initials agree and at least one side is written as initials
 }
 // Whitespace/period/hyphen-separated name tokens, stripped to letters:
 // "J. D." → ["J","D"], "Jon D" → ["Jon","D"], "Jean-Paul" → ["Jean","Paul"].
@@ -1114,9 +1167,13 @@ function authorExpansionCandidates(e,r){
   return file.map(a=>{
     const b=db.find(x=>authorLastMatches(a.last,x.last) && authorFirstMatches(a,x));
     if(!b) return null;
-    const fileIsInitial=!!a.firstInitial || /^[a-z](?:-?[a-z]){0,3}$/.test(a.first);
     const dbLooksFull=!b.firstInitial && b.first && b.first.length>1;
-    return fileIsInitial && dbLooksFull && a.first!==b.first ? {file:a.display, db:b.display} : null;
+    if(!dbLooksFull || a.first===b.first) return null;
+    // The file abbreviates the name if it's written as initials ("J.", "J-P")
+    // or as a proper prefix of the database's fuller form (Jon → Jonathan).
+    // A short-but-different real name (Mary vs Maria) is NOT an abbreviation.
+    const fileAbbreviated=!!a.firstInitial || (b.first.startsWith(a.first) && b.first.length>a.first.length);
+    return fileAbbreviated ? {file:a.display, db:b.display} : null;
   }).filter(Boolean);
 }
 function authorExpansionNote(expansions,source){
@@ -1179,9 +1236,13 @@ function dbAuthorToBib(name,surnameFirst){
   const parts=s.split(" ").filter(Boolean);
   if(parts.length<2) return s;          // single token — leave as-is
   if(surnameFirst){                     // PubMed: "Smith JD" → "Smith, J. D."
-    const last=parts[0];
-    const initials=parts.slice(1).join("").replace(/[^A-Za-z]/g,"");
-    const given=initials.split("").map(c=>c+".").join(" ");
+    // Only the LAST token is the initials block; everything before it is the
+    // surname ("van der Berg JD" → "van der Berg, J. D."). If the last token
+    // doesn't look like initials (suffixes, collective names), leave as-is.
+    const tail=parts[parts.length-1];
+    if(!/^[A-Z][A-Z-]{0,3}$/.test(tail)) return s;
+    const last=parts.slice(0,-1).join(" ");
+    const given=tail.replace(/[^A-Za-z]/g,"").split("").map(c=>c+".").join(" ");
     return given?`${last}, ${given}`:last;
   }
   const last=parts[parts.length-1];     // "John A. Smith" → "Smith, John A."
@@ -1279,7 +1340,7 @@ function addPublishedRecordFixes(e,out,r){
 }
 
 async function verifyEntry(e){
-  const out={status:"unchecked",notes:[],matches:[],fixes:[]};
+  const out={status:"unchecked",notes:[],fixes:[]};
   const V=CONFIG.verification;
   const order=normalizeSourceOrder(V.sourceOrder,V.sources);
   const enabled=order.filter(s=>(V.sources||[]).includes(s));
@@ -1302,6 +1363,11 @@ async function verifyEntry(e){
     }
     if(!rec) continue;
     if(lowTitleSimilarity(rec,title)){
+      // A DOI lookup that returns a different-looking paper is a finding, not a
+      // miss: the entry's DOI probably points to the wrong work. Accept the
+      // record so the mismatch is flagged (fixes stay blocked by the same
+      // similarity check inside safeRecordForFixes).
+      if(rec._lookup==="doi"){ recs.push(rec); break; }
       const sim=titleSimilarity(title,rec.title);
       lowTitleRejects.push(`${rec.source} (${(sim.score*100|0)}%${sim.reason?`, ${sim.reason}`:""})`);
       continue;
@@ -1327,7 +1393,6 @@ async function verifyEntry(e){
   }
 
   out.status="found";
-  out.matches=recs.map(r=>r.source);
   const primary=recs[0];
   out.source=recs.map(r=>r.source).join(" + ");
   out.matchedTitle=primary.title; out.matchedDoi=primary.doi; out.matchedUrl=primary.url;
@@ -1379,7 +1444,11 @@ async function verifyEntry(e){
     }
     if(r.title && title){
       const sim=titleSimilarity(title,r.title);
-      if(!sim.passes(V.titleSimThreshold)) out.notes.push(`Low title similarity vs ${r.source} (${(sim.score*100|0)}%${sim.reason?`, ${sim.reason}`:""}) — possible mismatch/fabrication`);
+      if(!sim.passes(V.titleSimThreshold)){
+        out.notes.push(r._lookup==="doi"
+          ? `DOI resolves to a different paper: ${r.source} returns "${r.title}" (${(sim.score*100|0)}% title similarity) — check the doi field`
+          : `Low title similarity vs ${r.source} (${(sim.score*100|0)}%${sim.reason?`, ${sim.reason}`:""}) — possible mismatch/fabrication`);
+      }
     }
     if(r.journal && !sourceIsPreprintRecord){
       const dbJournal=cleanField(r.journal);
@@ -1519,9 +1588,12 @@ async function augmentVerify(e,out,title){
         out.notes.push(`Published version found: ${pub.doi}${pub.year?` (${pub.year})`:""}`);
         const cur=e.fields.doi?normDoi(e.fields.doi):null;
         if(pub.doi && normDoi(pub.doi)!==cur){
-          addVerifyFix(out,"doi",normDoi(pub.doi),`Use published DOI ${normDoi(pub.doi)}`);
-          // the proposed DOI is now the published one, not the preprint matched earlier —
-          // show the published record's metadata in the preview so they correspond
+          // the published DOI supersedes any DOI fix suggested earlier (e.g. the
+          // preprint's own arXiv DOI) — replace it so the fix button and the
+          // preview below always refer to the same record
+          const fix={field:"doi",value:normDoi(pub.doi),label:`Use published DOI ${normDoi(pub.doi)}`};
+          const idx=out.fixes.findIndex(f=>f.field==="doi");
+          if(idx>=0) out.fixes[idx]=fix; else out.fixes.push(fix);
           out.doiPreview=doiPreviewRecord(pub);
         }
         addPublishedRecordFixes(e,out,pub);
@@ -1928,18 +2000,26 @@ function entryEl(e){
 /* ---- autocorrect ---- */
 // apply one fix to the entry's data; returns true if the entry itself changed
 function mutateEntry(e,act){
+  const unbare=f=>{ if(e.bare) delete e.bare[f]; };
   switch(act.kind){
-    case "setField": e.fields[act.field]=act.value; if(!e.order.includes(act.field))e.order.push(act.field); return true;
-    case "removeField": delete e.fields[act.field]; e.order=e.order.filter(x=>x!==act.field); return true;
-    case "renameField":{ const v=e.fields[act.field]; delete e.fields[act.field];
-      e.order=e.order.filter(x=>x!==act.field);
-      if(e.fields[act.to]==null){ e.fields[act.to]=v; e.order.push(act.to); } return true; }
+    case "setField": e.fields[act.field]=act.value; unbare(act.field); return true;
+    case "removeField": delete e.fields[act.field]; unbare(act.field); return true;
+    case "renameField":{
+      const v=e.fields[act.field];
+      const existing=e.fields[act.to];
+      // Never silently discard data: if the target already holds a different
+      // value, keep both fields and let the user resolve it by hand.
+      if(existing!=null && cleanField(existing)!==cleanField(v)) return false;
+      delete e.fields[act.field];
+      if(existing==null){ e.fields[act.to]=v; if(e.bare&&e.bare[act.field]) e.bare[act.to]=true; }
+      unbare(act.field);
+      return true; }
     case "setKey": e.key=act.value; return true;
     case "setType": e.type=String(act.value||"").toLowerCase(); return true;
     case "convertDateToYear":{ const y=(String(e.fields.date||"").replace(/[{}]/g,"").match(/\d{4}/)||[])[0];
       if(!y) return false;
-      e.fields.year=y; if(!e.order.includes("year")) e.order.push("year");
-      delete e.fields.date; e.order=e.order.filter(x=>x!=="date"); return true; }
+      e.fields.year=y; unbare("year");
+      delete e.fields.date; unbare("date"); return true; }
     case "allowField": if(!CONFIG.optionalFields.includes(act.field)) CONFIG.optionalFields.push(act.field); return false; // config change, not an entry change
   }
   return false;
@@ -1963,15 +2043,18 @@ function applyFix(e,act){
   if(!act) return;
   if(act.kind==="removeFieldAll"){ removeFieldEverywhere(act.field); return; }
   const oldKey=e.key.toLowerCase();
-  if(mutateEntry(e,act)){
+  const changed=mutateEntry(e,act);
+  if(changed){
     e._dirty=true;
-    refreshEntrySource(e);
     // Keep the verification record but drop only what this edit resolved, so
     // accepting one suggested fix no longer discards the entry's other fixes.
     if(e._verify) pruneResolvedVerify(e,e._verify);
   }
   if(OPEN.has(oldKey)){ OPEN.delete(oldKey); OPEN.add(e.key.toLowerCase()); }
-  lintAll(ENTRIES); render(); toast("Fixed");
+  lintAll(ENTRIES); render();
+  toast(changed||act.kind==="allowField" ? "Fixed" :
+    act.kind==="renameField" ? `Kept "${act.field}" — "${act.to}" already has a different value` :
+    "Nothing to fix");
 }
 function autoVerifyFixes(e){
   if(!CONFIG.autofix.fixDoi || e._resolved || !e._verify) return [];
@@ -1984,7 +2067,7 @@ function autoFixEntry(e){
   const verifyActs=autoVerifyFixes(e);
   for(const is of e.issues) for(const a of (is.actions||[])) if(a.auto && mutateEntry(e,a)){ n++; }
   for(const a of verifyActs) if(mutateEntry(e,a)){ n++; }
-  if(n){ e._dirty=true; refreshEntrySource(e); if(e._verify) pruneResolvedVerify(e,e._verify); }
+  if(n){ e._dirty=true; if(e._verify) pruneResolvedVerify(e,e._verify); }
   lintAll(ENTRIES); render(); toast(n?`Auto-fixed ${n} issue${n>1?"s":""}`:"Nothing to auto-fix");
 }
 function autoFixAll(){
@@ -1993,7 +2076,7 @@ function autoFixAll(){
     const verifyActs=autoVerifyFixes(e);
     for(const is of e.issues) for(const a of (is.actions||[])) if(a.auto && mutateEntry(e,a)){ c++; }
     for(const a of verifyActs) if(mutateEntry(e,a)){ c++; }
-    if(c){ e._dirty=true; refreshEntrySource(e); if(e._verify) pruneResolvedVerify(e,e._verify); n+=c; ents++; }
+    if(c){ e._dirty=true; if(e._verify) pruneResolvedVerify(e,e._verify); n+=c; ents++; }
   }
   lintAll(ENTRIES); render();
   toast(n?`Auto-fixed ${n} issue${n>1?"s":""} across ${ents} entr${ents>1?"ies":"y"}`:"Nothing to auto-fix");
@@ -2027,8 +2110,12 @@ function deleteEntry(e){
   toast("Entry deleted");
 }
 function escapeHtml(s){return (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+// URLs from the loaded .bib file or API responses become clickable links; only
+// allow http(s) so a crafted `url = {javascript:...}` can never execute.
+function safeUrl(u){ u=String(u||"").trim(); return /^https?:\/\//i.test(u)?u:""; }
 function doiAnchor(url,doi){
-  return `<a class="doi-link" href="${escapeHtml(url)}" title="Open DOI in popup window">${escapeHtml(doi)}</a>`;
+  const href=safeUrl(url)||`https://doi.org/${doi}`;
+  return `<a class="doi-link" href="${escapeHtml(href)}" title="Open DOI in popup window">${escapeHtml(doi)}</a>`;
 }
 function openDoiPopup(url){
   const w=900, h=720;
@@ -2141,7 +2228,8 @@ let VERIFYING=false;
 $("#btnVerify").onclick=async()=>{
   const btn=$("#btnVerify");
   if(VERIFYING){ VERIFYING=false; return; }   // second click = Stop
-  const list=filteredEntries().filter(e=>!e._verify || e._verify.status==="unchecked");
+  // "error" means a source outage / rate limit — transient, so batch runs retry it
+  const list=filteredEntries().filter(e=>!e._verify || e._verify.status==="unchecked" || e._verify.status==="error");
   if(!list.length){ toast("No filtered unchecked entries to verify"); return; }
   VERIFYING=true; btn.classList.add("running");
   let done=0;
@@ -2174,7 +2262,7 @@ function paintVerify(e){
   const preview=v.doiPreview;
   const link=preview?` ${doiAnchor(preview.url,preview.doi)}`:
     (v.matchedUrl&&v.matchedDoi)?` ${doiAnchor(v.matchedUrl,v.matchedDoi)}`:
-    v.matchedUrl?` <a href="${escapeHtml(v.matchedUrl)}" target="_blank" rel="noopener">link</a>`:
+    safeUrl(v.matchedUrl)?` <a href="${escapeHtml(safeUrl(v.matchedUrl))}" target="_blank" rel="noopener">link</a>`:
     v.matchedDoi?` ${doiAnchor(`https://doi.org/${v.matchedDoi}`,v.matchedDoi)}`:"";
   let rows=`<div class="issue ${cls}"><span class="ic">⌕</span>`+
     `<span><b>${escapeHtml(v.source||v.status)}</b>: ${v.notes.map(escapeHtml).join("; ")}${link}</span></div>`;
@@ -2182,9 +2270,12 @@ function paintVerify(e){
   // URL liveness as its own coloured row
   if(v.urlStatus){
     const uok=v.urlStatus.ok;
+    const checkedHref=safeUrl(v.urlChecked);
     rows+=`<div class="issue ${uok?'ok':'e'}"><span class="ic">${uok?'🔗':'⚠'}</span>`+
       `<span><b>URL</b>: ${uok?'reachable':escapeHtml(v.urlStatus.reason)} `+
-      `<a href="${escapeHtml(v.urlChecked)}" target="_blank" rel="noopener">${escapeHtml(v.urlChecked)}</a></span></div>`;
+      (checkedHref
+        ?`<a href="${escapeHtml(checkedHref)}" target="_blank" rel="noopener">${escapeHtml(v.urlChecked)}</a>`
+        :escapeHtml(v.urlChecked))+`</span></div>`;
   }
   // published version of a preprint
   if(v.published){
