@@ -89,6 +89,7 @@ const DEFAULT_CONFIG = {
     findPublished: true           // for arXiv/preprints, look for a published (peer-reviewed) version
   }
 };
+const ENTRY_TYPES=["article","book","inproceedings","conference","incollection","inbook","phdthesis","techreport","misc"];
 
 const STOPWORDS = new Set(("a an and are as at be by de do does die for from has he in is it its of on or "+
   "that the to was were will with we our this these those an via using toward towards "+
@@ -110,6 +111,7 @@ let RAW_PREAMBLE = "";   // @string / @preamble / @comment kept verbatim
 let CURRENT_FILE_NAME = "";
 let CUR_FILTER = "all";
 let CUR_SEARCH = "";
+let CUR_ISSUE = "";      // active dynamic issue-category filter ("" = none)
 
 /* ---------- 2. CONFIG ------------------------------------- */
 /* The config lives only for the session. To keep it, use Export JSON; to reuse
@@ -257,6 +259,7 @@ function lintAll(entries){
         const acts = to
           ? [{label:`Rename → ${to}`,kind:"renameField",field:f,to,auto:true}]
           : [{label:"Remove field",kind:"removeField",field:f},
+             {label:"Remove from all entries",kind:"removeFieldAll",field:f},
              {label:"Allow this field",kind:"allowField",field:f}];
         add("warn",`Unexpected field: ${f}`,"",acts);
       }
@@ -369,7 +372,8 @@ function verificationIssue(e){
   const v=e._verify;
   if(!v || v.status==="unchecked") return null;
   if(v.status==="error") return {sev:"err",msg:`Verification error: ${(v.notes&&v.notes[0])||"check failed"}`};
-  if(v.status==="notfound") return {sev:"err",msg:`Verification: ${(v.notes&&v.notes[0])||"no match found"}`};
+  // "not found" is not an error — it's its own status, surfaced as a category/badge, not a lint issue.
+  if(v.status==="notfound") return null;
   const hasProblem=v.notes&&v.notes.some(n=>VERIFY_PROBLEM_RE.test(n));
   const badUrl=v.urlStatus&&!v.urlStatus.ok;
   if(v.status==="found" && (hasProblem||badUrl)){
@@ -585,6 +589,9 @@ function sortEntries(entries){
 }
 // "modified" = the user edited / autofixed / added this entry (beyond auto-formatting).
 function isChanged(e){ return !!e._dirty; }
+// "not found" = online verification ran but no enabled database had a match. Its own
+// category next to "clean"/"modified", not an error. Hidden while an entry is resolved.
+function isNotFound(e){ return !e._resolved && !!e._verify && e._verify.status==="notfound"; }
 function refreshEntrySource(e){ e._src=serializeEntry(e,false); }
 function visibleErrCount(e){ return e._resolved ? 0 : e.errCount; }
 function visibleWarnCount(e){ return e._resolved ? 0 : e.warnCount; }
@@ -930,11 +937,21 @@ function isPreprintDoi(doi){
   return /10\.48550\/arxiv|10\.1101\/|10\.64898\/|10\.21203\/rs\.|10\.2139\/ssrn/i.test(d);
 }
 function isPreprintVenue(s){
-  return /arxiv|preprint|biorxiv|bioarxiv|medrxiv|openrxiv|ssrn|research\s*square/i.test(String(s||""));
+  // arXiv's OpenAlex/DataCite venue name is "arXiv (Cornell University)"; some records
+  // give only "Cornell University" (arXiv's host) — treat that as a preprint venue too,
+  // but never "Cornell University Press", which is a genuine book publisher.
+  return /arxiv|preprint|biorxiv|bioarxiv|medrxiv|openrxiv|ssrn|research\s*square|cornell\s+univ(?:ersity)?(?!\s+press)/i.test(String(s||""));
 }
 function preprintDoiBlockedByVenue(e,doi){
   const venue=entryVenue(e);
   return !!(isPreprintDoi(doi) && venue && !isPreprintVenue(venue));
+}
+// A looked-up record that is itself a preprint (arXiv/bioRxiv/SSRN/…), judged by its
+// DOI, venue, or work type. Such a record must not overwrite an entry that already has
+// a real published venue — "arXiv (Cornell University)" is a preprint host, not a journal.
+function isPreprintRecord(r){
+  if(!r) return false;
+  return (r.doi && isPreprintDoi(r.doi)) || isPreprintVenue(r.journal) || /preprint|posted-content/i.test(r.type||"");
 }
 /* return several candidates so we can pick a *published* (non-preprint) one */
 async function crossrefCandidates(title){
@@ -1016,21 +1033,31 @@ function authorFirstMatches(a,b){
   }
   return (a.firstInitial || b.firstInitial) && a.first[0]===b.first[0];
 }
+// Whitespace/period/hyphen-separated name tokens, stripped to letters:
+// "J. D." → ["J","D"], "Jon D" → ["Jon","D"], "Jean-Paul" → ["Jean","Paul"].
+function firstNameTokens(raw){
+  return String(raw||"").replace(/[{}]/g," ")
+    .split(/[\s.\-]+/)
+    .map(t=>t.replace(/[^A-Za-z]/g,""))
+    .filter(Boolean);
+}
+// The initials of a first name: one leading letter per token.
+// "J. D." → jd, "Jon D" → jd, "Jon David" → jd. A lone separator-free uppercase run
+// like "JD"/"JAD" is itself a string of initials, so expand it letter-by-letter.
 function authorInitials(raw){
-  const s=String(raw||"").replace(/[{}]/g," ").replace(/\s+/g," ").trim();
-  if(!s) return "";
-  const compact=s.replace(/[^A-Za-z]/g,"");
-  const initialTokens=s.match(/[A-Za-z](?=\s*\.|\s*-)/g);
-  if(initialTokens && initialTokens.length>=2 && initialTokens.join("").length===compact.length)
-    return initialTokens.join("").toLowerCase();
-  if(compact && compact.length<=4 && /^[A-Z]+$/i.test(compact) && (/[.\s]/.test(s) || /^[A-Z]{1,4}$/.test(compact))){
-    return compact.toLowerCase();
-  }
-  return s.split(/[\s.-]+/)
-    .map(part=>part.replace(/[^A-Za-z]/g,""))
-    .filter(Boolean)
-    .map(part=>part[0].toLowerCase())
-    .join("");
+  const tokens=firstNameTokens(raw);
+  if(!tokens.length) return "";
+  if(tokens.length===1 && /^[A-Z]{2,4}$/.test(tokens[0])) return tokens[0].toLowerCase();
+  return tokens.map(t=>t[0].toLowerCase()).join("");
+}
+// True when a first name is written purely as initials ("J", "J.", "JD", "J. D."),
+// not spelled out. "Jon D" is NOT initials-only — "Jon" is a real name — so a
+// multi-token string qualifies only when every token is a single letter.
+function isInitialsOnly(raw){
+  const tokens=firstNameTokens(raw);
+  if(!tokens.length) return false;
+  if(tokens.length===1) return /^[A-Z]{1,4}$/.test(tokens[0]);
+  return tokens.every(t=>t.length===1);
 }
 function authorPartsFromName(raw){
   const s=String(raw||"").trim().replace(/[{}]/g,"");
@@ -1049,8 +1076,7 @@ function authorPartsFromName(raw){
     }
   }
   const initials=authorInitials(firstRaw);
-  const compactFirst=String(firstRaw||"").replace(/[^A-Za-z]/g,"");
-  const firstInitial=!!(compactFirst && compactFirst.length<=4 && /^[A-Z]+$/i.test(compactFirst) && (/[.\s]/.test(firstRaw) || /^[A-Z]{1,4}$/.test(compactFirst)));
+  const firstInitial=isInitialsOnly(firstRaw);
   last=normAuthorLast(last); first=normAuthorFirst(first);
   return last?{last,first,firstInitial,initials,display:s}:null;
 }
@@ -1325,11 +1351,13 @@ async function verifyEntry(e){
   const publisherExpected=e.fields.publisher!=null||["book","incollection","inbook"].includes(e.type);
   // record a one-click fix (first source to suggest a given field wins)
   const addFix=(field,value,label)=>addVerifyFix(out,field,value,label);
-  const preprintDoiForPublishedVenue=!!(doi && isPreprintDoi(doi) && efJournal && !isPreprintVenue(efJournal));
+  // The entry already cites a real (non-preprint) venue — i.e. the paper is published.
+  const entryHasPublishedVenue=!!(efJournal && !isPreprintVenue(efJournal));
 
   // Aggregate cross-source signals.
   for(const r of recs){
-    const sourceIsPreprintRecord=!!(preprintDoiForPublishedVenue && (isPreprintDoi(r.doi||doi) || isPreprintVenue(r.journal)));
+    // Don't let a preprint record (arXiv/bioRxiv/…) rewrite an already-published entry.
+    const sourceIsPreprintRecord=!!(isPreprintRecord(r) && entryHasPublishedVenue);
     const safeFixes=safeRecordForFixes(e,r,title) && !sourceIsPreprintRecord;
     if(r.year && efYear && r.year!==efYear){
       out.notes.push(`Year: file=${efYear} vs ${r.source}=${r.year} — journal-edition and online-first years can differ; use the edition year`);
@@ -1353,7 +1381,7 @@ async function verifyEntry(e){
       const sim=titleSimilarity(title,r.title);
       if(!sim.passes(V.titleSimThreshold)) out.notes.push(`Low title similarity vs ${r.source} (${(sim.score*100|0)}%${sim.reason?`, ${sim.reason}`:""}) — possible mismatch/fabrication`);
     }
-    if(r.journal){
+    if(r.journal && !sourceIsPreprintRecord){
       const dbJournal=cleanField(r.journal);
       if(!efJournal){
         if(venueExpected){
@@ -1614,7 +1642,8 @@ function render(){
   ENTRIES=sortEntries(ENTRIES);  // visual order matches export order
   const errs=ENTRIES.reduce((s,e)=>s+visibleErrCount(e),0);
   const warns=ENTRIES.reduce((s,e)=>s+visibleWarnCount(e),0);
-  const clean=ENTRIES.filter(e=>!visibleErrCount(e)&&!visibleWarnCount(e)).length;
+  const notfound=ENTRIES.filter(isNotFound).length;
+  const clean=ENTRIES.filter(e=>!visibleErrCount(e)&&!visibleWarnCount(e)&&!isNotFound(e)).length;
   const mod=ENTRIES.filter(isChanged).length;
   $("#summary").style.display="flex";
   $("#summary").innerHTML=
@@ -1622,27 +1651,61 @@ function render(){
     `<span class="chip ${errs?'err':''}"><b>${errs}</b> errors</span>`+
     `<span class="chip ${warns?'warn':''}"><b>${warns}</b> warnings</span>`+
     `<span class="chip ok"><b>${clean}</b> clean</span>`+
+    (notfound?`<span class="chip nf"><b>${notfound}</b> not found</span>`:"")+
     (mod?`<span class="chip" style="border-color:var(--accent);color:var(--accent)"><b>${mod}</b> modified</span>`:"");
   $("#toolbar").style.display="flex";
   $("#entries").style.display="block";
   $("#btnReport").disabled=false;
   $("#btnImportReport").disabled=false;
   $("#btnExport").disabled=false;
+  renderIssueFilters();
   renderEntries();
 }
 function entryLetter(e){
   const c=String(e&&e.key||"").trim().charAt(0).toUpperCase();
   return /^[A-Z]$/.test(c) ? c : "#";
 }
-/* the entries currently shown, honouring both the status filter and the search box */
+/* Dynamic issue filters: sort each lint issue into a broad, human-readable bucket.
+   Only buckets actually present in the loaded library become chips beneath the
+   toolbar, so a user can jump straight to e.g. every duplicate key or page-range
+   problem without typing a search. First matching category wins; "other" catches
+   anything unclassified. */
+const ISSUE_CATEGORIES=[
+  {key:"required",   label:"Missing field",          re:/^Missing required field|^Missing journal; DOI\/URL looks like arXiv/i},
+  {key:"unknown",    label:"Unexpected field",       re:/^Unexpected field/i},
+  {key:"dupkey",     label:"Duplicate key",          re:/^Duplicate citation key|collides with/i},
+  {key:"dupdoi",     label:"Duplicate DOI",          re:/^Duplicate DOI/i},
+  {key:"keystyle",   label:"Key style",              re:/expected style/i},
+  {key:"year",       label:"Year format",            re:/^Year is not a 4-digit/i},
+  {key:"date",       label:"Date field",             re:/date field|and date \(|Redundant date/i},
+  {key:"pages",      label:"Page range",             re:/^Page range/i},
+  {key:"doi",        label:"DOI format",             re:/^DOI should be bare|canonical DOI/i},
+  {key:"month",      label:"Month format",           re:/^Month must be an integer/i},
+  {key:"protected",  label:"Protected words",        re:/not brace-protected/i},
+  {key:"type",       label:"Unknown type",           re:/^Unknown entry type/i},
+  {key:"eventtitle", label:"eventtitle → booktitle", re:/eventtitle/i},
+  {key:"verify",     label:"Verification",           re:/^Verification/i},
+  {key:"other",      label:"Other",                  re:/./},
+];
+function issueCategoryKey(issue){
+  const msg=(issue&&issue.msg)||"";
+  const c=ISSUE_CATEGORIES.find(c=>c.re.test(msg));
+  return c?c.key:"other";
+}
+function entryHasIssueCategory(e,key){
+  return !e._resolved && (e.issues||[]).some(is=>issueCategoryKey(is)===key);
+}
+/* the entries currently shown, honouring the status filter, the issue filter and the search box */
 function filteredEntries(){
   const q=CUR_SEARCH.trim().toLowerCase();
   return ENTRIES.filter(e=>{
     const errCount=visibleErrCount(e), warnCount=visibleWarnCount(e);
     if(CUR_FILTER==="err" && !(errCount>0)) return false;
     if(CUR_FILTER==="warn" && !(warnCount>0&&!errCount)) return false;
-    if(CUR_FILTER==="clean" && (errCount||warnCount)) return false;
+    if(CUR_FILTER==="clean" && (errCount||warnCount||isNotFound(e))) return false;
+    if(CUR_FILTER==="notfound" && !isNotFound(e)) return false;
     if(CUR_FILTER==="mod" && !isChanged(e)) return false;
+    if(CUR_ISSUE && !entryHasIssueCategory(e,CUR_ISSUE)) return false;
     if(q){
       const issueText=(e._resolved?[]:e.issues).map(x=>{
         const sev=x.sev==="err" ? "error err" : "warning warn";
@@ -1654,6 +1717,13 @@ function filteredEntries(){
     }
     return true;
   });
+}
+function verifyButtonLabel(){
+  return CUR_FILTER==="all" && !CUR_ISSUE && !CUR_SEARCH.trim() ? "Verify all…" : "Verify filtered…";
+}
+function updateVerifyButtonLabel(){
+  const btn=$("#btnVerify");
+  if(btn && !btn.classList.contains("running")) btn.textContent=verifyButtonLabel();
 }
 function autoFixTooltip(entries){
   const types=[];
@@ -1684,6 +1754,7 @@ function autoFixTooltip(entries){
 function renderEntries(){
   const box=$("#entries"); box.innerHTML="";
   const list=filteredEntries();
+  updateVerifyButtonLabel();
   $("#btnAutofix").title=autoFixTooltip(ENTRIES);
   renderAlphaRail(list);
   if(!list.length){ box.innerHTML=`<p class="muted" style="padding:16px">No entries match.</p>`; return; }
@@ -1699,12 +1770,55 @@ function renderEntries(){
     if(e._verify) paintVerify(e);
   }
 }
+/* Build the dynamic issue-filter chips from whatever issues the library actually
+   has. Each chip counts the ENTRIES carrying that issue type (not total issues),
+   respects resolved entries, and toggles a standalone filter. */
+function renderIssueFilters(){
+  const bar=$("#issuebar"); if(!bar) return;
+  const counts=new Map();  // key -> {label, count, err}
+  for(const e of ENTRIES){
+    if(e._resolved) continue;
+    const seen=new Set();
+    for(const is of e.issues||[]){
+      const key=issueCategoryKey(is);
+      let rec=counts.get(key);
+      if(!rec){
+        const cat=ISSUE_CATEGORIES.find(c=>c.key===key);
+        rec={label:(cat&&cat.label)||key, count:0, err:false};
+        counts.set(key,rec);
+      }
+      if(is.sev==="err") rec.err=true;
+      if(!seen.has(key)){ rec.count++; seen.add(key); }
+    }
+  }
+  if(CUR_ISSUE && !counts.has(CUR_ISSUE)) CUR_ISSUE="";   // selection no longer applies
+  if(!counts.size){ bar.style.display="none"; bar.innerHTML=""; return; }
+  bar.style.display="flex";
+  const chips=ISSUE_CATEGORIES.filter(c=>counts.has(c.key)).map(c=>{
+    const rec=counts.get(c.key);
+    const cls=`issuechip ${rec.err?"err":"warn"}${CUR_ISSUE===c.key?" active":""}`;
+    return `<button class="${cls}" data-issue="${c.key}">${escapeHtml(rec.label)} <b>${rec.count}</b></button>`;
+  }).join("");
+  bar.innerHTML=`<span class="lbl">Filter by issue:</span>${chips}`+
+    (CUR_ISSUE?`<button class="issuechip clearissue" data-issue="">Clear ✕</button>`:"");
+  bar.querySelectorAll(".issuechip").forEach(b=>b.onclick=()=>{
+    const key=b.dataset.issue;
+    CUR_ISSUE=(key && CUR_ISSUE!==key) ? key : "";
+    // issue chips are a standalone dimension — reset the status filter to All.
+    CUR_FILTER="all";
+    document.querySelectorAll(".filterbtn").forEach(x=>x.classList.toggle("active",x.dataset.f==="all"));
+    renderIssueFilters(); renderEntries();
+  });
+}
 function renderAlphaRail(list){
   const rail=$("#alphaRail");
   if(!rail) return;
   const letters=["#","A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z"];
   const available=new Set(list.map(entryLetter));
-  rail.classList.toggle("show",list.length>12);
+  // Base visibility on the whole library, not the filtered subset, so the rail
+  // doesn't flicker away when a filter or "Resolved" narrows the view. Hide it only
+  // when nothing is shown — there'd be no anchors to jump to.
+  rail.classList.toggle("show", ENTRIES.length>12 && list.length>0);
   rail.innerHTML=letters.map(l=>{
     const enabled=l==="#"||available.has(l);
     const label=l==="#"?"Back to top":`Jump to ${l}`;
@@ -1723,6 +1837,10 @@ function renderAlphaRail(list){
   });
 }
 const OPEN=new Set();   // remembers which entries are expanded across re-renders
+function entryTypeOptions(current){
+  const types=ENTRY_TYPES.includes(current) ? ENTRY_TYPES : [current,...ENTRY_TYPES];
+  return types.map(t=>`<option value="${escapeHtml(t)}" ${t===current?"selected":""}>${escapeHtml(t)}</option>`).join("");
+}
 function entryEl(e){
   const d=document.createElement("details"); d.className="entry";
   const kl=e.key.toLowerCase();
@@ -1737,7 +1855,8 @@ function entryEl(e){
   if(e._resolved)badges.push(`<span class="badge res" title="resolved — issues hidden">✓ resolved</span>`);
   else if(errCount)badges.push(`<span class="badge e">${errCount}</span>`);
   if(!e._resolved && warnCount)badges.push(`<span class="badge w">${warnCount}</span>`);
-  if(!errCount&&!warnCount&&!e._resolved)badges.push(`<span class="badge ok">✓</span>`);
+  if(isNotFound(e))badges.push(`<span class="badge nf" title="not found — no match in any enabled database">? not found</span>`);
+  if(!errCount&&!warnCount&&!e._resolved&&!isNotFound(e))badges.push(`<span class="badge ok">✓</span>`);
   e._fixacts=[];   // index → action, for the fix buttons below
   const visibleIssues=e._resolved ? [] : e.issues;
   const issues=visibleIssues.map(x=>{
@@ -1766,6 +1885,7 @@ function entryEl(e){
       verifySlot+
       `<div class="ebar">`+
         ((e.issues.length||e._resolved)?`<button class="ed-resolve">${e._resolved?"Show issues":"Resolved"}</button>`:"")+
+        `<select class="type-select" title="Entry type" aria-label="Entry type">${entryTypeOptions(e.type)}</select>`+
         `<button class="ed-edit">✎ Edit</button>`+
         `<button class="ed-verify">⌕ Verify</button>`+
         (hasAuto?`<button class="ed-autofix primary" title="${escapeHtml(autoTitle)}">⚡ Auto-fix this entry</button>`:"")+
@@ -1794,6 +1914,7 @@ function entryEl(e){
   d.querySelector(".ed-cancel").onclick=ev=>{ev.preventDefault(); area.value=fmt;
     edit.style.display="none"; bar.style.display="flex"; view.style.display="grid";};
   d.querySelector(".ed-apply").onclick=ev=>{ev.preventDefault(); applyEdit(e,area.value);};
+  d.querySelector(".type-select").onchange=ev=>applyFix(e,{kind:"setType",value:ev.target.value});
   d.querySelector(".ed-verify").onclick=ev=>{ev.preventDefault(); verifyOne(e,ev.currentTarget);};
   d.querySelector(".ed-del").onclick=ev=>{ev.preventDefault(); deleteEntry(e);};
   const rb=d.querySelector(".ed-resolve");
@@ -1814,6 +1935,7 @@ function mutateEntry(e,act){
       e.order=e.order.filter(x=>x!==act.field);
       if(e.fields[act.to]==null){ e.fields[act.to]=v; e.order.push(act.to); } return true; }
     case "setKey": e.key=act.value; return true;
+    case "setType": e.type=String(act.value||"").toLowerCase(); return true;
     case "convertDateToYear":{ const y=(String(e.fields.date||"").replace(/[{}]/g,"").match(/\d{4}/)||[])[0];
       if(!y) return false;
       e.fields.year=y; if(!e.order.includes("year")) e.order.push("year");
@@ -1822,8 +1944,24 @@ function mutateEntry(e,act){
   }
   return false;
 }
+// Remove a field from every entry and remember the choice, so it stays gone on
+// re-lint and never returns for other/newly-added entries. Mirrors "Allow this
+// field" (which adds to optionalFields) but in the opposite direction.
+function removeFieldEverywhere(field){
+  const name=String(field||"").toLowerCase();
+  if(!name) return;
+  const affected=ENTRIES.filter(e=>name in e.fields).length;
+  if(!CONFIG.formatting.dropFields.some(x=>x.toLowerCase()===name))
+    CONFIG.formatting.dropFields.push(name);
+  applyDropFields(ENTRIES);
+  lintAll(ENTRIES); render();
+  toast(affected
+    ? `Removed "${name}" from ${affected} ${affected===1?"entry":"entries"} (added to dropped fields)`
+    : `"${name}" added to dropped fields`);
+}
 function applyFix(e,act){
   if(!act) return;
+  if(act.kind==="removeFieldAll"){ removeFieldEverywhere(act.field); return; }
   const oldKey=e.key.toLowerCase();
   if(mutateEntry(e,act)){
     e._dirty=true;
@@ -1936,7 +2074,8 @@ function diffCodeHtml(original,formatted){
 /* filters */
 document.querySelectorAll(".filterbtn").forEach(b=>b.onclick=()=>{
   document.querySelectorAll(".filterbtn").forEach(x=>x.classList.remove("active"));
-  b.classList.add("active"); CUR_FILTER=b.dataset.f; renderEntries();
+  b.classList.add("active"); CUR_FILTER=b.dataset.f;
+  CUR_ISSUE=""; renderIssueFilters(); renderEntries();
 });
 /* search box (debounced) */
 let _searchT=null;
@@ -2015,7 +2154,7 @@ $("#btnVerify").onclick=async()=>{
     await new Promise(r=>setTimeout(r,CONFIG.verification.delayMs||DEFAULT_CONFIG.verification.delayMs)); // be polite to the APIs
   }
   const stopped=!VERIFYING && done<list.length;
-  VERIFYING=false; btn.classList.remove("running"); btn.textContent="Verify filtered…";
+  VERIFYING=false; btn.classList.remove("running"); btn.textContent=verifyButtonLabel();
   lintAll(ENTRIES); render();
   toast(stopped?`Stopped after ${done}`:"Verification complete");
 };
@@ -2031,7 +2170,7 @@ function paintVerify(e){
   if(!slot||!e._verify)return;
   if(e._resolved){ slot.innerHTML=""; return; }
   const v=e._verify;
-  const cls=v.status==="found"?(v.notes.some(n=>VERIFY_PROBLEM_RE.test(n))?"w":"ok"):"e";
+  const cls=v.status==="found"?(v.notes.some(n=>VERIFY_PROBLEM_RE.test(n))?"w":"ok"):v.status==="notfound"?"nf":"e";
   const preview=v.doiPreview;
   const link=preview?` ${doiAnchor(preview.url,preview.doi)}`:
     (v.matchedUrl&&v.matchedDoi)?` ${doiAnchor(v.matchedUrl,v.matchedDoi)}`:

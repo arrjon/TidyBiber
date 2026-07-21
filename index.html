@@ -20,7 +20,8 @@
     --bg:#fbfbf9; --ink:#16161a; --mute:#6b6b73; --line:#e3e3dd;
     --panel:#ffffff; --accent:#2d4f4a; --accent-soft:#e8efed;
     --warn:#8a5a00; --warn-bg:#fdf4e3; --err:#8a2a2a; --err-bg:#fbecec;
-    --ok:#2f6b3a; --ok-bg:#ecf4ee; --mono:'SF Mono',ui-monospace,'Cascadia Code',Menlo,Consolas,monospace;
+    --ok:#2f6b3a; --ok-bg:#ecf4ee; --nf:#4a4f66; --nf-bg:#eceef5; --nf-line:#d3d7e4;
+    --mono:'SF Mono',ui-monospace,'Cascadia Code',Menlo,Consolas,monospace;
     --sans:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
   }
   *{box-sizing:border-box;margin:0;padding:0}
@@ -59,6 +60,7 @@
   .chip.err{background:var(--err-bg);border-color:#f0cdcd;color:var(--err)}
   .chip.warn{background:var(--warn-bg);border-color:#f0e0bd;color:var(--warn)}
   .chip.ok{background:var(--ok-bg);border-color:#cfe5d4;color:var(--ok)}
+  .chip.nf{background:var(--nf-bg);border-color:var(--nf-line);color:var(--nf)}
 
   .toolbar{display:none;gap:8px;flex-wrap:wrap;margin:14px 0 6px;align-items:center}
   .toolbar .spacer{flex:1}
@@ -66,6 +68,20 @@
   .filterbtn.active{background:var(--ink);color:#fff;border-color:var(--ink)}
   #search{width:auto;flex:0 1 280px;font-family:var(--sans);font-size:13px;padding:6px 11px}
   #btnVerify.running{background:var(--err-bg);border-color:#f0cdcd;color:var(--err)}
+
+  /* dynamic issue filters */
+  .issuebar{display:none;gap:6px;flex-wrap:wrap;align-items:center;margin:0 0 12px}
+  .issuebar .lbl{font-family:var(--mono);font-size:12px;color:var(--mute);margin-right:2px}
+  .issuechip{font-family:var(--sans);font-size:12px;padding:4px 11px;border-radius:20px;
+    border:1px solid var(--line);background:#fff;color:var(--ink);cursor:pointer;
+    display:inline-flex;align-items:center;gap:6px;transition:.12s}
+  .issuechip:not(.active):hover{border-color:#c7c7bf}
+  .issuechip b{font-weight:650}
+  .issuechip.warn{background:var(--warn-bg);border-color:#f0e0bd;color:var(--warn)}
+  .issuechip.err{background:var(--err-bg);border-color:#f0cdcd;color:var(--err)}
+  .issuechip.active{background:var(--accent);border-color:var(--accent);color:#fff}
+  .issuechip.active b{color:#fff}
+  .issuechip.clearissue{background:#fff;border-color:var(--line);color:var(--mute)}
 
   /* entries */
   .entry-zone{position:relative}
@@ -94,11 +110,13 @@
   .badge.ok{background:var(--ok-bg);color:var(--ok)}
   .badge.mod{background:var(--accent-soft);color:var(--accent)}
   .badge.res{background:var(--ok-bg);color:var(--ok);width:auto;padding:0 7px}
+  .badge.nf{background:var(--nf-bg);color:var(--nf);width:auto;padding:0 7px}
   .ebody{border-top:1px solid var(--line);padding:14px 16px;background:#fcfcfb}
   .issues{margin-bottom:12px;display:flex;flex-direction:column;gap:6px}
   .issue{font-size:13px;padding:7px 10px;border-radius:7px;display:flex;gap:8px;align-items:flex-start}
   .issue.e{background:var(--err-bg);color:var(--err)}
   .issue.w{background:var(--warn-bg);color:var(--warn)}
+  .issue.nf{background:var(--nf-bg);color:var(--nf)}
   .issue .ic{font-family:var(--mono);font-weight:700;flex-shrink:0}
   .issue .fix{margin-left:auto;font-family:var(--mono);font-size:11.5px;opacity:.8;flex-shrink:0}
   .doi-preview{border:1px solid var(--line);background:#fff;border-radius:8px;padding:10px 12px;font-size:13px}
@@ -121,6 +139,7 @@
   .ebar{display:flex;gap:8px;align-items:center;margin-bottom:12px}
   .ebar .spacer{flex:1}
   .ebar button{padding:5px 11px;font-size:12.5px}
+  .ebar .type-select{width:auto;min-width:150px;max-width:210px;padding:5px 9px;font-size:12.5px}
   button.danger{color:var(--err);border-color:#f0cdcd}
   button.danger:hover{background:var(--err-bg);border-color:#e0a8a8}
   .entry-edit textarea{min-height:200px;line-height:1.55}
@@ -205,12 +224,15 @@
     <button class="filterbtn" data-f="err">Errors</button>
     <button class="filterbtn" data-f="warn">Warnings</button>
     <button class="filterbtn" data-f="clean">Clean</button>
+    <button class="filterbtn" data-f="notfound">Not found</button>
     <button class="filterbtn" data-f="mod">Modified</button>
     <span class="spacer"></span>
     <button id="btnAutofix">⚡ Auto-fix all</button>
     <button id="btnAdd">+ Add entry</button>
-    <button id="btnVerify">Verify filtered…</button>
+    <button id="btnVerify">Verify all…</button>
   </div>
+
+  <div class="issuebar" id="issuebar"></div>
 
   <div class="entry-zone">
     <div class="alpha-rail" id="alphaRail" aria-label="Jump to citation key letter"></div>
