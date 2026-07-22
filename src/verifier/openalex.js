@@ -28,6 +28,6 @@ function normOpenAlex(w){
   return { title:w.title||w.display_name||"", year:w.publication_year?String(w.publication_year):"",
     doi:(w.doi||"").replace(/^https?:\/\/(dx\.)?doi\.org\//i,""),
     firstAuthor:fa.split(/\s+/).pop()||"", authors:authors.join("; "), journal:venue, pages, publisher,
-    volume:b.volume||"", number:b.issue||"",
+    volume:b.volume||"", number:b.issue||"", retracted:!!w.is_retracted,
     source:"OpenAlex", url:w.doi||w.id||"" };
 }

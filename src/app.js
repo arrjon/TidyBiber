@@ -1,4 +1,5 @@
 import { createSources, SOURCE_DESCRIPTIONS } from "./verifier/sources.js";
+import { createBioRxivSource } from "./verifier/biorxiv.js";
 
 /* ============================================================
    TidyBiber — app logic. No third-party dependencies; no network except
@@ -110,6 +111,9 @@ const MONTHMAP = { jan:"1", january:"1", feb:"2", february:"2", mar:"3", march:"
 
 let CONFIG = structuredClone(DEFAULT_CONFIG);  // session-only; persist via Export/Import JSON
 const SOURCES = createSources({mailtoParam, parseBib, titleSimilarity, getConfig:()=>CONFIG});
+// Not a cascade source — a DOI-anchored preprint→published resolver used only by
+// the published-version lookup, so it stays out of CONFIG.verification.sources.
+const OPENRXIV = createBioRxivSource();
 let ENTRIES = [];        // parsed entries with diagnostics
 let RAW_PREAMBLE = "";   // @string / @preamble / @comment kept verbatim
 let CURRENT_FILE_NAME = "";
@@ -454,13 +458,16 @@ function lintAll(entries){
   }
   return entries;
 }
-const VERIFY_PROBLEM_RE=/mismatch|differs|fabrication|resolves to a different|Missing|Year:|author:|Author list|Journal\/venue:|abbreviated|Pages:|unreachable|timed out|Published version|Preprint/i;
+const VERIFY_PROBLEM_RE=/mismatch|differs|fabrication|resolves to a different|Missing|Year:|author:|Author list|Journal\/venue:|abbreviated|Pages:|unreachable|timed out|Published version|Preprint|RETRACTED/i;
 const REPORT_CACHE_START="-----BEGIN TIDYBIBER VERIFICATION CACHE-----";
 const REPORT_CACHE_END="-----END TIDYBIBER VERIFICATION CACHE-----";
 function verificationIssue(e){
   const v=e._verify;
   if(!v || v.status==="unchecked") return null;
   if(v.status==="error") return {sev:"err",msg:`Verification error: ${(v.notes&&v.notes[0])||"check failed"}`};
+  // A retracted work is the most serious finding — flag it as an error regardless
+  // of how well the other fields match.
+  if(v.retracted) return {sev:"err",msg:`Verification: RETRACTED — this reference is marked retracted${v.source?` (${v.source})`:""}`};
   // "not found" is not an error — it's its own status, surfaced as a category/badge, not a lint issue.
   if(v.status==="notfound") return null;
   const hasProblem=v.notes&&v.notes.some(n=>VERIFY_PROBLEM_RE.test(n));
@@ -1141,7 +1148,37 @@ function publishedTitleMatch(original,candidate){
   // share a generic phrase like "sequential ... likelihood-free inference".
   return short<4 ? sim.score>=0.9 : shared/short>=0.8 && shared/long>=0.85;
 }
+/* bioRxiv/medRxiv record the published journal DOI for a preprint, so a 10.1101
+   entry resolves DOI-first with no fuzzy title search. Resolve that DOI to a full
+   record (Crossref, then OpenAlex); if neither can flesh it out yet, still return
+   the bare DOI — the openRxiv mapping is authoritative enough to suggest it. */
+async function bioRxivPublishedRecord(e,title){
+  const doi=e.fields.doi?normDoi(e.fields.doi):"";
+  if(!doi) return null;
+  let pubDoi="";
+  try{ pubDoi=await OPENRXIV.publishedDoi(doi); }catch(err){ return null; }
+  if(!pubDoi) return null;
+  pubDoi=normDoi(pubDoi);
+  if(pubDoi===doi || isPreprintDoi(pubDoi)) return null;   // must be a real published DOI
+  let rec=null;
+  for(const name of ["crossref","openalex"]){
+    const s=SOURCES[name];
+    if(!s||!s.byDoi) continue;
+    try{ rec=await s.byDoi(pubDoi); }catch(err){}
+    if(rec) break;
+  }
+  if(!rec) return {doi:pubDoi, title:"", year:"", firstAuthor:"", authors:"", journal:"", pages:"",
+    source:"bioRxiv/medRxiv", url:`https://doi.org/${pubDoi}`, _via:"bioRxiv/medRxiv"};
+  // Sanity-gate the resolved record the same way the title path does, so an
+  // unexpected DOI mapping can't push an unrelated paper onto the entry.
+  if(!isPublishedCandidate(rec)) return null;
+  if(title && rec.title && !publishedTitleMatch(title,rec.title)) return null;
+  if(!publishedAuthorMatch(e,rec)) return null;
+  return {...rec, _via:"bioRxiv/medRxiv"};
+}
 async function findPublishedVersion(e,title){
+  // High-confidence, DOI-anchored path first (works even without a title).
+  try{ const direct=await bioRxivPublishedRecord(e,title); if(direct) return direct; }catch(err){}
   if(!title) return null;
   let cands=[];
   try{ cands=cands.concat(await crossrefCandidates(title)); }catch(err){}
@@ -1499,6 +1536,14 @@ async function verifyEntry(e){
   out.source=recs.map(r=>r.source).join(" + ");
   out.matchedTitle=primary.title; out.matchedDoi=primary.doi; out.matchedUrl=primary.url;
   out.matchedAuthors=primary.authors||"";
+  // Retraction is a fatal finding, not a field diff — surface it first. Only the
+  // matched source(s) that carry the signal are checked (Crossref update-to /
+  // OpenAlex is_retracted), so coverage tracks whichever confident source answered.
+  const retractedBy=recs.filter(r=>r.retracted).map(r=>r.source);
+  if(retractedBy.length){
+    out.retracted=true;
+    out.notes.push(`RETRACTED — ${retractedBy.join(", ")} lists this work as retracted; do not cite it as a valid reference`);
+  }
   if(primary.doi) out.doiPreview=doiPreviewRecord(primary);
   const primarySafeFixes=safeRecordForFixes({fields:{...e.fields, title}},primary,title);
 
@@ -1687,7 +1732,7 @@ async function augmentVerify(e,out,title){
     try{
       const pub=await findPublishedVersion(e,title);
       if(pub){ out.published=pub;
-        out.notes.push(`Published version found: ${pub.doi}${pub.year?` (${pub.year})`:""}`);
+        out.notes.push(`Published version found${pub._via?` via ${pub._via}`:""}: ${pub.doi}${pub.year?` (${pub.year})`:""}`);
         const cur=e.fields.doi?normDoi(e.fields.doi):null;
         if(pub.doi && normDoi(pub.doi)!==cur){
           // the published DOI supersedes any DOI fix suggested earlier (e.g. the
@@ -1860,6 +1905,7 @@ const ISSUE_CATEGORIES=[
   {key:"allcaps",    label:"ALL-CAPS title",         re:/^Title is ALL-CAPS/i},
   {key:"type",       label:"Unknown type",           re:/^Unknown entry type/i},
   {key:"eventtitle", label:"eventtitle → booktitle", re:/eventtitle/i},
+  {key:"retracted",  label:"Retracted",              re:/RETRACTED/},
   {key:"verify",     label:"Verification",           re:/^Verification/i},
   {key:"other",      label:"Other",                  re:/./},
 ];

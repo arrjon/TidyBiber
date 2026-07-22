@@ -22,10 +22,19 @@ function normCrossref(m){
   const dp=(m.issued&&m.issued["date-parts"])||(m.published&&m.published["date-parts"]);
   const dateParts=dp&&dp[0]||[];
   const authors=((m.author||[]).map(a=>a.name||compactJoin([a.given,a.family])).filter(Boolean));
-  return { title:(m.title&&m.title[0])||"", year:dateParts[0]?String(dateParts[0]):"",
+  // Publishers deposit split colon-titles (title=["NeRF"], subtitle=["Representing
+  // Scenes as Neural Radiance Fields…"]); rejoin so a correct DOI's title doesn't
+  // read as a mismatch. Skip when the subtitle is already inside the main title.
+  const mainTitle=(m.title&&m.title[0])||"";
+  const subtitle=(m.subtitle&&m.subtitle[0])||"";
+  const title=subtitle && !mainTitle.toLowerCase().includes(subtitle.toLowerCase())
+    ? (mainTitle ? `${mainTitle}: ${subtitle}` : subtitle) : mainTitle;
+  // Crossref exposes a retraction as an "update-to" relation of type "retraction".
+  const retracted=(m["update-to"]||[]).some(u=>/retraction/i.test((u&&u.type)||""));
+  return { title, year:dateParts[0]?String(dateParts[0]):"",
     doi:m.DOI||"", firstAuthor:(m.author&&m.author[0]&&(m.author[0].family||""))||"",
     authors:authors.join("; "), journal:(m["container-title"]&&m["container-title"][0])||"", pages:m.page||"",
     volume:m.volume||"", number:m.issue||"", month:dateParts[1]?String(dateParts[1]):"",
-    articleno:m["article-number"]||"", publisher:m.publisher||"",
+    articleno:m["article-number"]||"", publisher:m.publisher||"", retracted,
     source:"Crossref", url:m.URL||(m.DOI?`https://doi.org/${m.DOI}`:"") };
 }
