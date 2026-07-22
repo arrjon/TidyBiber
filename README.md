@@ -6,7 +6,7 @@
 
 **Lint, format, and verify your BibTeX — right in the browser.**
 
-Runs entirely in your browser. Your library never leaves your machine.
+Runs entirely in your browser.
 
 [**▶ Open the app**](https://arrjon.github.io/TidyBiber/)
 ·
